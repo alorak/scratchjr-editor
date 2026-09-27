@@ -224,3 +224,13 @@ test('real-world SJR archive test is part of npm test discovery',async()=>{
   assert.match(archiveTest,/project\/backgrounds\/Farm\.svg/);
   assert.match(archiveTest,/project\/sounds\/horse\.wav/);
 });
+
+test('autosave generations prevent stale status updates',()=>{
+  assert.match(app,/autosaveGeneration=0/);
+  assert.match(app,/const generation=\+\+autosaveGeneration/);
+  assert.match(app,/if\(generation!==autosaveGeneration\) return/);
+});
+
+test('manual page renders cancel queued thumbnail work',()=>{
+  assert.match(app,/function renderPages\(\)\{\s*if\(renderPagesTimer\)\{clearTimeout\(renderPagesTimer\);renderPagesTimer=null;\}/);
+});
