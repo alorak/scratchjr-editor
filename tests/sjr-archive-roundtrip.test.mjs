@@ -18,7 +18,7 @@ async function loadVendoredJSZip(){
   };
   sandbox.global=sandbox; sandbox.self=sandbox; sandbox.window=sandbox;
   vm.runInNewContext(source,sandbox,{filename:'vendor/jszip.min.js'});
-  const JSZip=module.exports||sandbox.JSZip;
+  const JSZip=typeof module.exports==='function'?module.exports:sandbox.JSZip;
   assert.equal(typeof JSZip,'function');
   return JSZip;
 }
