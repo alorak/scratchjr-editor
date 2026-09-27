@@ -30,7 +30,7 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - `app.js`: UI, sahne, ses, import/export ve autosave akışları
 - `roundtrip-utils.mjs`: test edilebilir ScratchJr round-trip yardımcıları
 - `tests/`: metadata, import doğrulama, güvenlik, offline, ses/layer, performans regresyonları ve gerçek-dünya ScratchJr archive fixture testleri
-- `.github/workflows/ci.yml`: minimal syntax + Node test CI
+- `.github/workflows/ci.yml`: syntax + Node testleri ve gerçek headless Chrome smoke testi
 
 ## Çalıştırma
 
@@ -47,8 +47,10 @@ Node.js ile ek bağımlılık kurmadan:
 ```bash
 npm run check
 npm test
-# veya ikisini birlikte:
+# Node regresyonlarının tamamı:
 npm run ci
+# Chrome/Chromium kurulu bir ortamda gerçek browser smoke:
+npm run smoke:browser
 ```
 
 Testler; fixture tabanlı script/metadata koruması, gerçek-dünya ScratchJr alanlarıyla oluşturulan .sjr ZIP round-trip'i, import path traversal/duplicate basename kontrolleri, bozuk ScratchJr metadata doğrulaması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, SVG fallback politikası, CSP/offline runtime, service worker, audio lifecycle, thumbnail cache/debounce, import/export progress, dialog focus yönetimi, keyboard tab navigation ve responsive touch kurallarını kontrol eder.
@@ -56,3 +58,8 @@ Testler; fixture tabanlı script/metadata koruması, gerçek-dünya ScratchJr al
 ## ScratchJr uyumluluğu
 
 Editör 480×360 ScratchJr sahne koordinat sistemini kullanır ve sayfa sayısını 4 ile sınırlar. Yeni karakter SVG'lerinde yalnızca doğrudan normalize edilmesi güvenli görülen path/circle/polygon tabanlı yapılar vektör tutulur. Arc komutları, transform, root-level inherited stiller, CSS style, non-zero viewBox origin, rect/ellipse/line/polyline/text/use, clip/mask/filter/gradient/pattern gibi karmaşık yapılar görünümü korumak için otomatik raster fallback yoluna alınır. Harici http(s) kaynak referansı içeren SVG'ler offline çalışma nedeniyle reddedilir.
+
+
+## Browser smoke testi
+
+CI, ek Playwright/Puppeteer bağımlılığı kurmadan GitHub Ubuntu runner'ındaki gerçek headless Chrome'u kullanır. Küçük bir yerel HTTP sunucusu üzerinden uygulamayı açar ve ES module'ların yüklenmesini, boot'un tamamlanmasını, ilk sayfanın çizilmesini, autosave durumunun hazır olmasını ve temel tab/panel DOM'unu doğrular.
