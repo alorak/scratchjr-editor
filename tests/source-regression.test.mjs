@@ -7,6 +7,8 @@ const app=await readFile(new URL('../app.js',import.meta.url),'utf8');
 test('critical round-trip guards remain wired',()=>{
   assert.match(app,/MAX_PAGES=4/);
   assert.match(app,/selectBackgroundSvg\(asset,coverSvg\)/);
+  assert.match(app,/function fileToBackgroundAsset\(file\)/);
+  assert.match(app,/const a=await fileToBackgroundAsset\(f\)/);
   assert.match(app,/preserveSvg:true/);
   assert.match(app,/characters:charManifest/);
   assert.match(app,/resolveCurrentPageIndex\(J\.currentPage,pageKeys\)/);
