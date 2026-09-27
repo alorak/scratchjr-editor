@@ -141,7 +141,7 @@ test('import produces a user-visible validation report',async()=>{
   assert.match(index,/id="importReportSummary"/);
   assert.match(index,/id="importReportIssues"/);
   assert.match(app,/function showImportReport\(report\)/);
-  assert.match(app,/const report=await importSRJ\(file\)/);
+  assert.match(app,/const report=await importSRJ\(file,op\.update\)/);
   assert.match(app,/showImportReport\(report\)/);
 });
 
@@ -233,4 +233,73 @@ test('autosave generations prevent stale status updates',()=>{
 
 test('manual page renders cancel queued thumbnail work',()=>{
   assert.match(app,/function renderPages\(\)\{\s*if\(renderPagesTimer\)\{clearTimeout\(renderPagesTimer\);renderPagesTimer=null;\}/);
+});
+
+
+test('import and export expose staged operation progress',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(index,/id="operationProgress"/);
+  assert.match(index,/id="operationProgressBar"/);
+  assert.match(index,/id="operationProgressLabel"/);
+  assert.match(app,/function startOperation\(title\)/);
+  assert.match(app,/startOperation\('Dışa aktarılıyor'\)/);
+  assert.match(app,/startOperation\('İçe aktarılıyor'\)/);
+  assert.match(app,/async function importSRJ\(file,progress=\(\)=>\{\}\)/);
+  assert.match(app,/Arşiv açılıyor…/);
+  assert.match(app,/Sayfa '\+\(i\+1\)\+' \/ '\+pages\.length\+' hazırlandı/);
+  assert.match(app,/zip\.generateAsync\(\{type:'blob',compression:'DEFLATE'\},meta=>/);
+});
+
+test('tabs use roving keyboard navigation and tabpanel semantics',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(index,/id="tab-chars"[^>]*aria-controls="panel-chars"[^>]*tabindex="0"/);
+  assert.match(index,/id="tab-bg"[^>]*tabindex="-1"/);
+  assert.match(index,/id="panel-stage" role="tabpanel" aria-labelledby="tab-stage"/);
+  assert.match(app,/\['ArrowRight','ArrowLeft','Home','End'\]/);
+  assert.match(app,/t\.tabIndex=active\?0:-1/);
+  assert.match(app,/p\.hidden=!active/);
+});
+
+test('dialogs share focus trap escape handling and focus restoration',()=>{
+  assert.match(app,/const dialogState=new WeakMap\(\),dialogStack=\[\]/);
+  assert.match(app,/function showDialog\(overlay,initialFocus,onEscape\)/);
+  assert.match(app,/function hideDialog\(overlay,restoreFocus=true\)/);
+  assert.match(app,/if\(e\.key!=='Tab'\) return/);
+  assert.match(app,/stateForDialog\?\.opener\?\.isConnected/);
+  assert.match(app,/showDialog\(overlay,recBtn,closeModal\)/);
+  assert.match(app,/showDialog\(ov,document\.getElementById\('importReportClose'\),closeImportReport\)/);
+  assert.match(app,/showDialog\(ov,okBtn,\(\)=>close\(false\)\)/);
+  assert.doesNotMatch(app,/document\.addEventListener\('keydown',e=>\{if\(e\.key==='Escape'&&overlay\.classList\.contains\('show'\)\)/);
+});
+
+test('page pickers restore focus even after page controls rerender',()=>{
+  assert.match(app,/bgBtn\.dataset\.pageBg=String\(i\)/);
+  assert.match(app,/charBtn\.dataset\.pageChar=String\(i\)/);
+  assert.match(app,/querySelector\('\[data-page-bg="'\+target\+'"\]'\)\?\.focus\(\)/);
+  assert.match(app,/querySelector\('\[data-page-char="'\+target\+'"\]'\)\?\.focus\(\)/);
+});
+
+test('mobile tablet layout exposes horizontal pages and coarse touch targets',async()=>{
+  const css=await readFile(new URL('../app.css',import.meta.url),'utf8');
+  assert.match(css,/@media \(max-width:720px\)/);
+  assert.match(css,/\.pages-panel\{display:flex;flex-direction:row/);
+  assert.match(css,/scroll-snap-type:x proximity/);
+  assert.match(css,/\.sidebar-col\{order:3;width:100%;flex-direction:column/);
+  assert.match(css,/\.srec-trim-handle\{width:26px\}/);
+  assert.match(css,/@media \(pointer:coarse\)/);
+  assert.match(css,/\.page-del\{width:30px;height:30px/);
+});
+
+
+test('transfer operations are mutually exclusive and progress announcements stay quiet',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(app,/let transferBusy=false/);
+  assert.match(app,/function setTransferBusy\(busy\)/);
+  assert.match(app,/if\(transferBusy\) return showToast\('Başka bir içe\/dışa aktarma işlemi sürüyor'\)/);
+  assert.match(app,/setTransferBusy\(true\)/);
+  assert.match(app,/setTransferBusy\(false\)/);
+  assert.doesNotMatch(index,/id="operationProgress" role="status"/);
+  assert.match(index,/id="operationProgressLabel" role="status" aria-live="polite"/);
+  assert.match(app,/if\(label\.textContent!==nextText\) label\.textContent=nextText/);
+  assert.match(app,/op\.update\(pct,'Arşiv sıkıştırılıyor…'\)/);
 });

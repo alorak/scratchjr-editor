@@ -97,6 +97,70 @@ document.addEventListener('keydown',e=>{
   }
 });
 
+/* ---------- ortak dialog / progress yardımcıları ---------- */
+const dialogState=new WeakMap(),dialogStack=[];
+function dialogFocusables(overlay){
+  return [...overlay.querySelectorAll('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+    .filter(el=>!el.hidden&&el.offsetParent!==null);
+}
+function showDialog(overlay,initialFocus,onEscape){
+  if(!overlay) return;
+  const opener=document.activeElement instanceof HTMLElement?document.activeElement:null;
+  dialogState.set(overlay,{opener,onEscape});
+  const oldIndex=dialogStack.indexOf(overlay); if(oldIndex>=0) dialogStack.splice(oldIndex,1);
+  dialogStack.push(overlay);
+  overlay.classList.add('show');
+  requestAnimationFrame(()=>{
+    const target=initialFocus||dialogFocusables(overlay)[0]||overlay;
+    if(target===overlay&&!overlay.hasAttribute('tabindex')) overlay.setAttribute('tabindex','-1');
+    target.focus?.();
+  });
+}
+function hideDialog(overlay,restoreFocus=true){
+  if(!overlay) return;
+  overlay.classList.remove('show');
+  const i=dialogStack.lastIndexOf(overlay); if(i>=0) dialogStack.splice(i,1);
+  const stateForDialog=dialogState.get(overlay);
+  dialogState.delete(overlay);
+  if(restoreFocus&&stateForDialog?.opener?.isConnected) requestAnimationFrame(()=>stateForDialog.opener.focus());
+}
+document.addEventListener('keydown',e=>{
+  const overlay=dialogStack[dialogStack.length-1];
+  if(!overlay||!overlay.classList.contains('show')) return;
+  if(e.key==='Escape'){
+    e.preventDefault(); e.stopPropagation();
+    const close=dialogState.get(overlay)?.onEscape;
+    if(close) close(); else hideDialog(overlay);
+    return;
+  }
+  if(e.key!=='Tab') return;
+  const items=dialogFocusables(overlay);
+  if(!items.length){e.preventDefault();overlay.focus();return;}
+  const first=items[0],last=items[items.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+},true);
+
+function startOperation(title){
+  const box=document.getElementById('operationProgress');
+  const titleEl=document.getElementById('operationProgressTitle');
+  const pctEl=document.getElementById('operationProgressPct');
+  const bar=document.getElementById('operationProgressBar');
+  const label=document.getElementById('operationProgressLabel');
+  box.hidden=false; titleEl.textContent=title;
+  const update=(percent,text)=>{
+    const p=Math.max(0,Math.min(100,Math.round(Number(percent)||0)));
+    const nextText=text||'İşleniyor…';
+    pctEl.textContent=p+'%'; bar.style.width=p+'%';
+    if(label.textContent!==nextText) label.textContent=nextText;
+  };
+  update(0,'Hazırlanıyor…');
+  return {
+    update,
+    close(){box.hidden=true;bar.style.width='0%';pctEl.textContent='0%';}
+  };
+}
+
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
 let autosaveTimer=null, autosaveErrorShown=false, autosaveGeneration=0;
@@ -587,16 +651,34 @@ function addBgToLib(asset,name){ const it={id:nextId(),name:name||'Arkaplan',ass
 function applyBg(libItem){ state.pages[state.current].bg={ mode:'image', asset:libItem.asset, color:'#fff', bgId:libItem.id }; }
 
 /* ---------- TABLAR ---------- */
-document.getElementById('tabbar').addEventListener('click',e=>{
+const tabbar=document.getElementById('tabbar');
+tabbar.addEventListener('click',e=>{
   const t=e.target.closest('.tab'); if(!t) return; setTab(t.dataset.tab);
+});
+tabbar.addEventListener('keydown',e=>{
+  if(!['ArrowRight','ArrowLeft','Home','End'].includes(e.key)) return;
+  const tabs=[...tabbar.querySelectorAll('.tab')],current=tabs.indexOf(document.activeElement);
+  if(current<0) return;
+  e.preventDefault();
+  let next=current;
+  if(e.key==='ArrowRight') next=(current+1)%tabs.length;
+  if(e.key==='ArrowLeft') next=(current-1+tabs.length)%tabs.length;
+  if(e.key==='Home') next=0;
+  if(e.key==='End') next=tabs.length-1;
+  tabs[next].focus(); setTab(tabs[next].dataset.tab);
 });
 function setTab(name){
   document.querySelectorAll('.tab').forEach(t=>{
     const active=t.dataset.tab===name;
     t.classList.toggle('active',active);
     t.setAttribute('aria-selected',active?'true':'false');
+    t.tabIndex=active?0:-1;
   });
-  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p=>{
+    const active=p.dataset.tab===name;
+    p.classList.toggle('active',active);
+    p.hidden=!active;
+  });
   if(name==='stage'){ renderWorkspace(); }
   if(name==='bg'){ renderBgTab(); }
 }
@@ -880,10 +962,10 @@ function renderPages(){
     // Action buttons (left of thumbnail)
     const acts=document.createElement('div'); acts.className='page-actions';
     const bgBtn=document.createElement('button'); bgBtn.className='page-act-btn'; bgBtn.title='Arkaplan seç';
-    bgBtn.textContent='🎨';
+    bgBtn.dataset.pageBg=String(i); bgBtn.textContent='🎨';
     bgBtn.onclick=ev=>{ ev.stopPropagation(); openBgPick(i); };
     const charBtn=document.createElement('button'); charBtn.className='page-act-btn char-btn'; charBtn.title='Karakter ekle';
-    charBtn.textContent='+';
+    charBtn.dataset.pageChar=String(i); charBtn.textContent='+';
     charBtn.onclick=ev=>{ ev.stopPropagation(); openCharPick(i); };
     acts.append(bgBtn,charBtn);
     // Thumbnail
@@ -1422,13 +1504,13 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     hideTrim();
     timer.textContent='00:00:00.00';
     document.getElementById('srecTitle').textContent=nextName();
-    overlay.classList.add('show');
+    showDialog(overlay,recBtn,closeModal);
     requestAnimationFrame(()=>{resizeCvs();drawIdle();});
   }
 
   function closeModal(){
     startRequestId++;
-    overlay.classList.remove('show');
+    hideDialog(overlay);
     recBtn.disabled=false;
     if(isRecording) stopRec(false);
     stopPlayback();
@@ -1581,7 +1663,6 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   document.getElementById('srecClose').onclick=closeModal;
   overlay.addEventListener('click',e=>{if(e.target===overlay)closeModal();});
   recBtn.onclick=()=>{if(isRecording)stopRec(true);else startRec();};
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&overlay.classList.contains('show')) closeModal();});
 })();
 
 
@@ -1667,11 +1748,20 @@ async function renderThumb(page){
 function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H,r=Math.max(W/iw,H/ih),dw=iw*r,dh=ih*r;
   try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch(e){} }
 
+let transferBusy=false;
+function setTransferBusy(busy){
+  transferBusy=!!busy;
+  document.getElementById('importBtn').disabled=transferBusy;
+  document.getElementById('exportBtn').disabled=transferBusy;
+}
+
 async function exportSRJ(pagesArg){
+  if(transferBusy) return showToast('Başka bir içe/dışa aktarma işlemi sürüyor');
   if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
-  // Hiç sahneye eklenmemiş karakter uyarısı
-  const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
+  const btn=document.getElementById('exportBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Hazırlanıyor…';
+  const op=startOperation('Dışa aktarılıyor');
+  op.update(5,'Proje yapısı hazırlanıyor…');
   try{
     const name=(document.getElementById('pname').value||'Benim Projem').trim();
     const zip=new JSZip(); const root=zip.folder('project');
@@ -1688,6 +1778,7 @@ async function exportSRJ(pagesArg){
         }
       }
     }
+    op.update(20,state.sounds.length?'Sesler arşive eklendi':'Ses bulunmuyor');
     const mapSoundRef=ref=>{
       const raw=String(ref||''), base=raw.replace(/^.*[\\/]/,'');
       return soundOutBySource.get(raw)||soundOutBySource.get(base)||raw;
@@ -1747,6 +1838,7 @@ async function exportSRJ(pagesArg){
       pageObj.layers=mergeLayerOrder(oldLayers,emittedIds);
       jsonObj[key]=pageObj;
       const tb=await renderThumb(page); const tn=i+'_'+md5buf(tb)+'.png'; thumbDir.file(tn,tb); if(i===0)firstThumb=tn;
+      op.update(25+Math.round(50*(i+1)/Math.max(1,pages.length)),'Sayfa '+(i+1)+' / '+pages.length+' hazırlandı');
     }
     // Karakter kütüphanesindeki kullanılmayan öğeleri de editör round-trip'i için koru.
     const charManifest=[];
@@ -1767,6 +1859,7 @@ async function exportSRJ(pagesArg){
     // srjlib.json — import sırasında tüm bgLib'i geri yüklemek için
     const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
     root.file('srjlib.json', JSON.stringify({characters:charManifest, backgrounds:bgManifest, sounds:sndManifest}));
+    op.update(82,'Kütüphane manifesti hazırlanıyor…');
 
     const data=state.sjrDataMeta ? cloneJson(state.sjrDataMeta) : {};
     if(!data.id) data.id=String(Math.floor(Date.now()/1000));
@@ -1777,15 +1870,21 @@ async function exportSRJ(pagesArg){
     data.name=name; data.mtime=String(Date.now());
     data.thumbnail={pagecount:pages.length,md5:firstThumb}; data.json=jsonObj;
     root.file('data.json', JSON.stringify(data));
-    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
+    op.update(90,'Arşiv sıkıştırılıyor…');
+    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'},meta=>{
+      const pct=90+Math.round(Math.max(0,Math.min(100,meta.percent||0))*0.08);
+      op.update(pct,'Arşiv sıkıştırılıyor…');
+    });
+    op.update(98,'İndirme hazırlanıyor…');
     const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=safe+'.sjr';
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    op.update(100,'Tamamlandı');
     showToast('✓ '+safe+'.sjr indirildi');
   }catch(err){ console.error(err); showToast('Dışa aktarma sırasında hata oluştu','err'); }
-  finally{ btn.disabled=false; btn.textContent=old; }
+  finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
 }
-document.getElementById('exportBtn').onclick=exportSRJ;
+document.getElementById('exportBtn').onclick=()=>exportSRJ();
 
 /* ---------- içe aktarma (.sjr) ---------- */
 function svgImageHref(svgText){
@@ -1872,11 +1971,13 @@ function safeDisplayName(value,fallback){
   return s.slice(0,80)||fallback;
 }
 
-async function importSRJ(file){
+async function importSRJ(file,progress=()=>{}){
   if(typeof JSZip==='undefined') throw new Error('Sıkıştırma kütüphanesi yüklenemedi');
   assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
+  progress(5,'Arşiv açılıyor…');
   const zip=await JSZip.loadAsync(file);
   assertZipSafety(zip);
+  progress(14,'Arşiv doğrulandı');
   const report=createImportReport(), zipIndex=buildZipIndex(zip);
 
   const dataEntries=zipIndex.files.filter(x=>/(^|\/)data\.json$/i.test(x.path));
@@ -1894,6 +1995,7 @@ async function importSRJ(file){
   if(validation.errors.length) throw new Error(validation.errors.join(' · '));
   validation.warnings.forEach(msg=>addImportIssue(report,'warning',msg));
   const wrappedData=validation.wrapped, J=validation.json, pageKeys=validation.pageKeys;
+  progress(24,'Proje metadata’sı doğrulandı');
 
   const ns={pages:[],current:resolveCurrentPageIndex(J.currentPage,pageKeys),charLib:[],bgLib:[],sounds:[],selected:null,selectedText:null,
     sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{},sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys)};
@@ -1951,6 +2053,7 @@ async function importSRJ(file){
     }
   }
 
+  progress(38,'Karakter ve arkaplan kütüphanesi işlendi');
   const sndNameByFile=new Map();
   if(libManifest&&typeof libManifest==='object'){
     for(const sm of safeManifestArray(libManifest.sounds,report,'sounds')){
@@ -1982,6 +2085,7 @@ async function importSRJ(file){
     }catch(err){addImportIssue(report,'skipped','Ses okunamadı: '+base);}
   }
 
+  progress(52,'Sesler işlendi');
   for(let i=0;i<pageKeys.length;i++){
     const key=pageKeys[i],po=J[key],page=newPage();
     if(po&&typeof po==='object'&&!Array.isArray(po)){
@@ -2038,13 +2142,16 @@ async function importSRJ(file){
       }
     }
     ns.pages.push(page); report.pages++;
+    progress(55+Math.round(35*(i+1)/Math.max(1,pageKeys.length)),'Sayfa '+(i+1)+' / '+pageKeys.length+' içe aktarılıyor');
   }
   if(!ns.pages.length){ns.pages.push(newPage());report.pages=1;}
+  progress(94,'Çalışma alanı hazırlanıyor…');
 
   checkpoint();
   Object.assign(state,ns); state.current=Math.max(0,Math.min(ns.current,ns.pages.length-1)); state.selected=null;
   document.getElementById('pname').value=safeDisplayName(data&&data.name,'Benim Projem').slice(0,40);
   render(); setTab('chars');
+  progress(100,'İçe aktarma tamamlandı');
   return report;
 }
 
@@ -2061,14 +2168,17 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
       +'<div class="warnline">↶ İçe aktardıktan sonra gerekirse Geri Al ile önceki çalışmana dönebilirsin.</div>'
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
-  const btn=document.getElementById('importBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Yükleniyor…';
+  if(transferBusy){showToast('Başka bir içe/dışa aktarma işlemi sürüyor');return;}
+  const btn=document.getElementById('importBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Yükleniyor…';
+  const op=startOperation('İçe aktarılıyor');
   try{
-    const report=await importSRJ(file);
+    const report=await importSRJ(file,op.update);
+    op.close();
     showImportReport(report);
   }catch(err){
     console.error(err);
     showToast('İçe aktarılamadı: '+(err.message||'dosya okunamadı'),'err');
-  }finally{ btn.disabled=false; btn.textContent=old; }
+  }finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
 });
 
 
@@ -2095,12 +2205,11 @@ function showImportReport(report){
   }else{
     const li=document.createElement('li'); li.className='import-issue ok'; li.textContent='Herhangi bir eksik veya atlanan öğe tespit edilmedi.'; issues.appendChild(li);
   }
-  ov.classList.add('show'); document.getElementById('importReportClose').focus();
+  showDialog(ov,document.getElementById('importReportClose'),closeImportReport);
 }
-function closeImportReport(){document.getElementById('importReportOverlay').classList.remove('show');}
+function closeImportReport(){hideDialog(document.getElementById('importReportOverlay'));}
 document.getElementById('importReportClose').onclick=closeImportReport;
 document.getElementById('importReportOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('importReportOverlay'))closeImportReport();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('importReportOverlay').classList.contains('show'))closeImportReport();});
 
 /* ---------- modal onayı ---------- */
 function setSafeModalHtml(target,html){
@@ -2124,17 +2233,16 @@ function confirmModal(opts){
     okBtn.textContent=opts.okText||'Evet';
     cancelBtn.textContent=opts.cancelText||'Vazgeç';
     function close(val){
-      ov.classList.remove('show');
+      hideDialog(ov);
       okBtn.removeEventListener('click',onOk); cancelBtn.removeEventListener('click',onCancel);
-      ov.removeEventListener('click',onBackdrop); document.removeEventListener('keydown',onKey);
+      ov.removeEventListener('click',onBackdrop);
       res(val);
     }
     const onOk=()=>close(true), onCancel=()=>close(false);
     const onBackdrop=e=>{ if(e.target===ov) close(false); };
-    const onKey=e=>{ if(e.key==='Escape') close(false); else if(e.key==='Enter') close(true); };
     okBtn.addEventListener('click',onOk); cancelBtn.addEventListener('click',onCancel);
-    ov.addEventListener('click',onBackdrop); document.addEventListener('keydown',onKey);
-    ov.classList.add('show'); okBtn.focus();
+    ov.addEventListener('click',onBackdrop);
+    showDialog(ov,okBtn,()=>close(false));
   });
 }
 
@@ -2217,12 +2325,13 @@ function showSvgInfo(libItem){
     compatEl.className='compat-bar warn';
     compatEl.textContent='↪ Kaynak vektör korunuyor; yeni yüklemelerde bu yapı otomatik olarak raster fallback yoluna alınır.';
   }
-  document.getElementById('infoOverlay').classList.add('show');
+  const overlay=document.getElementById('infoOverlay');
+  showDialog(overlay,document.getElementById('infoClose'),closeInfoDialog);
 }
-
-document.getElementById('infoClose').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoCloseBtn').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))document.getElementById('infoOverlay').classList.remove('show');});
+function closeInfoDialog(){hideDialog(document.getElementById('infoOverlay'));}
+document.getElementById('infoClose').onclick=closeInfoDialog;
+document.getElementById('infoCloseBtn').onclick=closeInfoDialog;
+document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))closeInfoDialog();});
 
 /* ---------- arkaplan picker ---------- */
 let bgPickTarget=null;
@@ -2239,7 +2348,7 @@ function openBgPick(pageIdx){
     state.bgLib.forEach(it=>{
       const item=document.createElement('div'); item.className='pick-item bgitem';
       if(curPg.bg.bgId===it.id) item.style.borderColor='var(--blue)';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
+      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
       const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); scheduleAutosave(); };
@@ -2248,9 +2357,15 @@ function openBgPick(pageIdx){
       grid.appendChild(item);
     });
   }
-  document.getElementById('bgPickOverlay').classList.add('show');
+  const overlay=document.getElementById('bgPickOverlay');
+  showDialog(overlay,document.getElementById('bgPickClose'),closeBgPick);
 }
-function closeBgPick(){ document.getElementById('bgPickOverlay').classList.remove('show'); bgPickTarget=null; }
+function closeBgPick(){
+  const target=bgPickTarget;
+  hideDialog(document.getElementById('bgPickOverlay'));
+  bgPickTarget=null;
+  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-bg="'+target+'"]')?.focus());
+}
 function applyBgToPage(pageIdx,libItem){
   state.pages[pageIdx].bg={mode:'image',asset:libItem.asset,color:'#fff',bgId:libItem.id};
   if(pageIdx===state.current) renderStage();
@@ -2278,7 +2393,7 @@ function openCharPick(pageIdx){
     empty.style.display='none'; grid.style.display='';
     state.charLib.forEach(it=>{
       const item=document.createElement('div'); item.className='pick-item';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
+      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
       const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); scheduleAutosave(); };
@@ -2287,9 +2402,15 @@ function openCharPick(pageIdx){
       grid.appendChild(item);
     });
   }
-  document.getElementById('charPickOverlay').classList.add('show');
+  const overlay=document.getElementById('charPickOverlay');
+  showDialog(overlay,document.getElementById('charPickClose'),closeCharPick);
 }
-function closeCharPick(){ document.getElementById('charPickOverlay').classList.remove('show'); charPickTarget=null; }
+function closeCharPick(){
+  const target=charPickTarget;
+  hideDialog(document.getElementById('charPickOverlay'));
+  charPickTarget=null;
+  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-char="'+target+'"]')?.focus());
+}
 function addCharToPage(pageIdx,libItem){
   const a=libItem.asset; const aspect=a.h/a.w;
   state.pages[pageIdx].chars.push({id:nextId(),libId:libItem.id,name:libItem.name,asset:a,fx:0.5,fy:0.5,sizePct:27,flip:false,aspect});
@@ -2302,11 +2423,6 @@ function addCharToPage(pageIdx,libItem){
 }
 document.getElementById('charPickClose').onclick=closeCharPick;
 document.getElementById('charPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('charPickOverlay')) closeCharPick(); });
-document.addEventListener('keydown',e=>{
-  if(e.key!=='Escape') return;
-  document.getElementById('infoOverlay').classList.remove('show');
-  closeBgPick(); closeCharPick();
-});
 
 /* ---------- toast ---------- */
 let toastTimer=null;
