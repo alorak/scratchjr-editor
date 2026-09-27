@@ -1,4 +1,4 @@
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,normalizeArchivePath,validateScratchJrProject,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
@@ -7,7 +7,7 @@ if('serviceWorker' in navigator){
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
 const MB=1024*1024, MAX_IMAGE_BYTES=10*MB, MAX_SOUND_BYTES=20*MB, MAX_SJR_BYTES=25*MB;
-const MAX_ZIP_ENTRIES=500, MAX_ZIP_UNCOMPRESSED=100*MB, MAX_ZIP_ENTRY=30*MB;
+const MAX_ZIP_ENTRIES=500, MAX_ZIP_UNCOMPRESSED=100*MB, MAX_ZIP_ENTRY=30*MB, MAX_METADATA_BYTES=2*MB, MAX_MANIFEST_ITEMS=500;
 // ScratchJr varsayılan scale=0.5'te karakter sahnenin ~%27'sini kaplasın:
 // CHAR_CANONICAL_W * 0.5 = STAGE_W * 0.27  →  259 px
 const CHAR_CANONICAL_W = Math.round(STAGE_W * 27 / 50);
@@ -186,12 +186,21 @@ function assertZipSafety(zip){
   zip.forEach((p,zf)=>{
     if(zf.dir) return;
     entries++;
+    const original=zf.unsafeOriginalName||p;
+    if(!normalizeArchivePath(original)) throw new Error('Arşiv güvensiz dosya yolu içeriyor: '+String(original).slice(0,120));
     const n=Number(zf?._data?.uncompressedSize||0);
     if(Number.isFinite(n)){ total+=n; largest=Math.max(largest,n); }
   });
   if(entries>MAX_ZIP_ENTRIES) throw new Error('Arşiv çok fazla dosya içeriyor');
   if(largest>MAX_ZIP_ENTRY) throw new Error('Arşivde izin verilenden büyük bir dosya var');
   if(total>MAX_ZIP_UNCOMPRESSED) throw new Error('Arşivin açılmış boyutu güvenli sınırı aşıyor');
+}
+async function readJsonEntry(entry,label,maxBytes=MAX_METADATA_BYTES){
+  const hinted=Number(entry?._data?.uncompressedSize||0);
+  if(Number.isFinite(hinted)&&hinted>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
+  const text=await entry.async('string');
+  if(new TextEncoder().encode(text).length>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
+  try{return JSON.parse(text);}catch(e){throw new Error(label+' geçerli JSON değil');}
 }
 const b64=s=>btoa(unescape(encodeURIComponent(s)));
 function readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
@@ -723,7 +732,9 @@ function renderBgTab(){
   });
   const note=document.getElementById('bgPageNote');
   const cur=page.bg.mode==='color'?('düz renk '+page.bg.color):'bir resim';
-  note.innerHTML=`Şu an düzenlenen: <b>Sayfa ${state.current+1}</b> — arkaplan: ${cur}. (Sayfayı değiştirmek için Sahne sekmesini kullan.)`;
+  const strong=document.createElement('b'); strong.textContent='Sayfa '+(state.current+1);
+  note.replaceChildren(document.createTextNode('Şu an düzenlenen: '),strong,
+    document.createTextNode(' — arkaplan: '+cur+'. (Sayfayı değiştirmek için Sahne sekmesini kullan.)'));
   document.getElementById('bgColor').value = page.bg.mode==='color'?page.bg.color:'#eaf4ff';
 }
 async function removeBgLib(it){
@@ -1804,12 +1815,57 @@ async function svgTextToAsset(text,opts={}){
   let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
   return { isSvg:true, vector:!hasImage, preserveSvg:!!opts.preserveSvg, svgText:text, dataURL, w:w||150, h:h||150, img };
 }
-function findZipFile(zip,candidates){
-  for(const c of candidates){ const f=zip.file(c); if(f) return f; }
-  const base=(candidates[0]||'').split('/').pop().toLowerCase();
-  let found=null;
-  zip.forEach((p,zf)=>{ if(!found && !zf.dir && p.toLowerCase().split('/').pop()===base) found=zf; });
-  return found;
+function buildZipIndex(zip){
+  const byPath=new Map(),byBase=new Map(),files=[];
+  zip.forEach((p,zf)=>{
+    if(zf.dir) return;
+    const safe=normalizeArchivePath(p);
+    if(!safe) return;
+    const key=safe.toLowerCase();
+    byPath.set(key,zf); files.push({path:safe,file:zf});
+    const base=safe.split('/').pop().toLowerCase();
+    const arr=byBase.get(base)||[]; arr.push({path:safe,file:zf}); byBase.set(base,arr);
+  });
+  return {byPath,byBase,files};
+}
+function createImportReport(){
+  return {pages:0,characters:0,texts:0,backgrounds:0,sounds:0,issues:[]};
+}
+function addImportIssue(report,kind,message){
+  if(report.issues.length>=100) return;
+  const key=kind+'|'+message;
+  if(!report._seen) Object.defineProperty(report,'_seen',{value:new Set(),enumerable:false});
+  if(report._seen.has(key)) return;
+  report._seen.add(key); report.issues.push({kind,message});
+}
+function resolveZipFile(index,candidates,report,label){
+  const safeCandidates=[];
+  for(const raw of candidates){
+    const safe=normalizeArchivePath(raw);
+    if(!safe){ addImportIssue(report,'warning',(label||'Asset')+' için güvensiz yol reddedildi: '+String(raw).slice(0,100)); continue; }
+    safeCandidates.push(safe);
+    const exact=index.byPath.get(safe.toLowerCase());
+    if(exact) return exact;
+  }
+  const base=(safeCandidates[0]||'').split('/').pop().toLowerCase();
+  if(!base) return null;
+  const matches=index.byBase.get(base)||[];
+  if(matches.length===1){
+    addImportIssue(report,'warning',(label||base)+' beklenen klasörde değildi; '+matches[0].path+' kullanıldı');
+    return matches[0].file;
+  }
+  if(matches.length>1) addImportIssue(report,'warning',(label||base)+' için '+matches.length+' aynı adlı dosya bulundu; belirsiz olduğu için atlandı');
+  return null;
+}
+function safeManifestArray(value,report,label){
+  if(value==null) return [];
+  if(!Array.isArray(value)){addImportIssue(report,'warning',label+' manifest alanı dizi değil; atlandı');return [];}
+  if(value.length>MAX_MANIFEST_ITEMS){addImportIssue(report,'warning',label+' manifest alanı '+MAX_MANIFEST_ITEMS+' öğeyle sınırlandı');}
+  return value.slice(0,MAX_MANIFEST_ITEMS);
+}
+function safeDisplayName(value,fallback){
+  const s=String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
+  return s.slice(0,80)||fallback;
 }
 
 async function importSRJ(file){
@@ -1817,124 +1873,165 @@ async function importSRJ(file){
   assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
   const zip=await JSZip.loadAsync(file);
   assertZipSafety(zip);
+  const report=createImportReport(), zipIndex=buildZipIndex(zip);
 
-  // data.json'u bul (genelde project/data.json)
-  let dataFile=null;
-  zip.forEach((p,zf)=>{ if(!dataFile && !zf.dir && /(^|\/)data\.json$/i.test(p)) dataFile=zf; });
-  if(!dataFile) throw new Error('Geçerli bir .srj değil: data.json bulunamadı');
-  const prefix=dataFile.name.replace(/data\.json$/i,'');           // ör. "project/"
-  const data=JSON.parse(await dataFile.async('string'));
-  const wrappedData=!!(data && data.json);
-  const J=wrappedData ? data.json : (data||{});
-  const pageKeys=Array.isArray(J.pages)?J.pages:[];
-  if(pageKeys.length>MAX_PAGES) throw new Error('Bu proje '+pageKeys.length+' sayfa içeriyor. ScratchJr en fazla '+MAX_PAGES+' sayfa destekler.');
+  const dataEntries=zipIndex.files.filter(x=>/(^|\/)data\.json$/i.test(x.path));
+  let dataEntry=null;
+  const canonical=dataEntries.find(x=>x.path.toLowerCase()==='project/data.json');
+  if(canonical) dataEntry=canonical;
+  else if(dataEntries.length===1) dataEntry=dataEntries[0];
+  else if(dataEntries.length>1) throw new Error('Arşivde birden fazla data.json bulundu; proje kökü belirsiz');
+  if(!dataEntry) throw new Error('Geçerli bir .sjr değil: data.json bulunamadı');
 
-  const ns={ pages:[], current:resolveCurrentPageIndex(J.currentPage,pageKeys), charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null,
-    sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{}, sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys) };
-  const charLibByFile=new Map();   // karakter dosyası -> kütüphane öğesi
-  const bgLibByFile=new Map();     // arkaplan dosyası -> kütüphane öğesi
+  const dataFile=dataEntry.file;
+  const prefix=dataEntry.path.replace(/data\.json$/i,'');
+  const data=await readJsonEntry(dataFile,'data.json');
+  const validation=validateScratchJrProject(data,MAX_PAGES);
+  if(validation.errors.length) throw new Error(validation.errors.join(' · '));
+  validation.warnings.forEach(msg=>addImportIssue(report,'warning',msg));
+  const wrappedData=validation.wrapped, J=validation.json, pageKeys=validation.pageKeys;
 
-  async function getCharLib(md5file){
-    if(!md5file) return null;
-    if(charLibByFile.has(md5file)) return charLibByFile.get(md5file);
-    const f=findZipFile(zip,[prefix+'characters/'+md5file,'characters/'+md5file]);
-    if(!f) return null;
-    const asset=await svgTextToAsset(await f.async('string'));
-    const it={ id:nextId(), name:'Karakter', asset };
-    ns.charLib.push(it); charLibByFile.set(md5file,it); return it;
+  const ns={pages:[],current:resolveCurrentPageIndex(J.currentPage,pageKeys),charLib:[],bgLib:[],sounds:[],selected:null,selectedText:null,
+    sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{},sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys)};
+  const charLibByFile=new Map(),bgLibByFile=new Map();
+
+  async function getCharLib(md5file,context='Karakter'){
+    const safeRef=normalizeArchivePath(md5file);
+    if(!safeRef){addImportIssue(report,'warning',context+': geçersiz karakter dosya yolu');return null;}
+    if(charLibByFile.has(safeRef)) return charLibByFile.get(safeRef);
+    const assetFile=resolveZipFile(zipIndex,[prefix+'characters/'+safeRef,'characters/'+safeRef],report,context+' / '+safeRef);
+    if(!assetFile){addImportIssue(report,'missing',context+': '+safeRef+' karakter dosyası bulunamadı');return null;}
+    try{
+      const asset=await svgTextToAsset(await assetFile.async('string'));
+      const it={id:nextId(),name:'Karakter',asset};
+      ns.charLib.push(it); charLibByFile.set(safeRef,it); report.characters++; return it;
+    }catch(err){
+      addImportIssue(report,'skipped',context+': '+safeRef+' okunamadı ('+(err.message||'SVG hatası')+')'); return null;
+    }
   }
-  async function getBgLib(md5file,bgText){
-    if(bgLibByFile.has(md5file)) return bgLibByFile.get(md5file);
-    const asset=await svgTextToAsset(bgText,{preserveSvg:true});
-    const it={ id:nextId(), name:'Arkaplan', asset };
-    ns.bgLib.push(it); bgLibByFile.set(md5file,it); return it;
+  async function getBgLib(md5file,bgText,context='Arkaplan'){
+    const safeRef=normalizeArchivePath(md5file);
+    if(!safeRef){addImportIssue(report,'warning',context+': geçersiz arkaplan dosya yolu');return null;}
+    if(bgLibByFile.has(safeRef)) return bgLibByFile.get(safeRef);
+    try{
+      const asset=await svgTextToAsset(bgText,{preserveSvg:true});
+      const it={id:nextId(),name:'Arkaplan',asset};
+      ns.bgLib.push(it); bgLibByFile.set(safeRef,it); report.backgrounds++; return it;
+    }catch(err){
+      addImportIssue(report,'skipped',context+': '+safeRef+' okunamadı ('+(err.message||'SVG hatası')+')'); return null;
+    }
   }
 
-  // kütüphane bildirimi: bu araçla "sadece kütüphane" olarak dışa aktarılmış dosyaları geri yükle
   let libManifest=null;
-  const libFile=findZipFile(zip,[prefix+'srjlib.json','srjlib.json']);
-  if(libFile){ try{ libManifest=JSON.parse(await libFile.async('string')); }catch(e){ libManifest=null; } }
-  if(libManifest){
-    // Yeni format: characters dizisi; eski format: chars dizisi — ikisini de destekle
-    const charList=libManifest.characters||libManifest.chars||[];
-    for(const c of charList){
-      const it=await getCharLib(c.file);
-      if(it){ it.name=c.displayName||c.name||'Karakter'; }
+  const libFile=resolveZipFile(zipIndex,[prefix+'srjlib.json','srjlib.json'],report,'srjlib.json');
+  if(libFile){
+    try{libManifest=await readJsonEntry(libFile,'srjlib.json');}
+    catch(err){addImportIssue(report,'warning',err.message);libManifest=null;}
+  }
+  if(libManifest&&typeof libManifest==='object'){
+    const charList=safeManifestArray(libManifest.characters||libManifest.chars,report,'characters');
+    for(const entry of charList){
+      if(!entry||typeof entry!=='object'){addImportIssue(report,'warning','Geçersiz karakter manifest öğesi atlandı');continue;}
+      const it=await getCharLib(entry.file,'Kütüphane karakteri');
+      if(it) it.name=safeDisplayName(entry.displayName||entry.name,'Karakter');
     }
-    const bgList=libManifest.backgrounds||libManifest.bgs||[];
+    const bgList=safeManifestArray(libManifest.backgrounds||libManifest.bgs,report,'backgrounds');
     for(const bb of bgList){
-      const bf=findZipFile(zip,[prefix+'backgrounds/'+bb.file,'backgrounds/'+bb.file]);
-      if(bf){ const t=await bf.async('string'); const it=await getBgLib(bb.file,t); if(it && bb.name) it.name=bb.name; }
+      if(!bb||typeof bb!=='object'){addImportIssue(report,'warning','Geçersiz arkaplan manifest öğesi atlandı');continue;}
+      const safeRef=normalizeArchivePath(bb.file);
+      if(!safeRef){addImportIssue(report,'warning','Kütüphane arkaplanı: geçersiz dosya yolu');continue;}
+      const bf=resolveZipFile(zipIndex,[prefix+'backgrounds/'+safeRef,'backgrounds/'+safeRef],report,'Kütüphane arkaplanı / '+safeRef);
+      if(!bf){addImportIssue(report,'missing','Kütüphane arkaplanı: '+safeRef+' bulunamadı');continue;}
+      const it=await getBgLib(safeRef,await bf.async('string'),'Kütüphane arkaplanı');
+      if(it) it.name=safeDisplayName(bb.name,'Arkaplan');
     }
   }
-  const sndNameByFile={}; if(libManifest) for(const sm of (libManifest.sounds||[])) sndNameByFile[sm.file]=sm.name;
 
-  // sesler (sounds/ klasöründeki ses dosyaları)
-  const sndList=[];
-  zip.forEach((p,zf)=>{ if(!zf.dir && /(^|\/)sounds\//i.test(p) && /\.(wav|mp3|webm|m4a|ogg)$/i.test(p)) sndList.push({path:p,f:zf}); });
-  let sN=0;
+  const sndNameByFile={};
+  if(libManifest&&typeof libManifest==='object'){
+    for(const sm of safeManifestArray(libManifest.sounds,report,'sounds')){
+      if(!sm||typeof sm!=='object') continue;
+      const safeRef=normalizeArchivePath(sm.file);
+      if(safeRef) sndNameByFile[safeRef.split('/').pop()]=safeDisplayName(sm.name,'Ses');
+    }
+  }
+
+  const sndList=zipIndex.files.filter(x=>/(^|\/)sounds\//i.test(x.path)&&/\.(wav|mp3|webm|m4a|ogg)$/i.test(x.path));
+  const soundBases=new Set(); let sN=0;
   for(const s of sndList){
     let ext=(s.path.split('.').pop()||'wav').toLowerCase();
     if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav';
-    const base=s.path.split('/').pop();
-    ns.sounds.push({ id:nextId(), name: sndNameByFile[base] || ('Ses '+(++sN)), buf:await s.f.async('arraybuffer'), ext, sourceFile:base });
+    const base=s.path.split('/').pop(); soundBases.add(base);
+    try{
+      ns.sounds.push({id:nextId(),name:sndNameByFile[base]||('Ses '+(++sN)),buf:await s.file.async('arraybuffer'),ext,sourceFile:base});
+      report.sounds++;
+    }catch(err){addImportIssue(report,'skipped','Ses okunamadı: '+base);}
   }
 
-  // sayfalar
   for(let i=0;i<pageKeys.length;i++){
-    const po=J[pageKeys[i]];
-    const page=newPage();
-    if(po){
+    const key=pageKeys[i],po=J[key],page=newPage();
+    if(po&&typeof po==='object'&&!Array.isArray(po)){
       page.sjrMeta=pageMetaWithoutSprites(po);
-      // arkaplan
       if(po.md5){
-        const bf=findZipFile(zip,[prefix+'backgrounds/'+po.md5,'backgrounds/'+po.md5]);
-        if(bf){
-          const bgText=await bf.async('string');
-          const solidFill=solidColorSvgFill(bgText);
-          if(solidFill){
-            page.bg={ mode:'color', color:solidFill, asset:null, bgId:null };
-          } else {
-            const it=await getBgLib(po.md5,bgText);
-            if(it) page.bg={ mode:'image', asset:it.asset, color:'#fff', bgId:it.id };
+        const safeRef=normalizeArchivePath(po.md5);
+        if(!safeRef) addImportIssue(report,'warning',key+': geçersiz arkaplan yolu');
+        else{
+          const bf=resolveZipFile(zipIndex,[prefix+'backgrounds/'+safeRef,'backgrounds/'+safeRef],report,key+' arkaplanı / '+safeRef);
+          if(!bf) addImportIssue(report,'missing',key+': '+safeRef+' arkaplan dosyası bulunamadı');
+          else{
+            try{
+              const bgText=await bf.async('string'),solidFill=solidColorSvgFill(bgText);
+              if(solidFill) page.bg={mode:'color',color:solidFill,asset:null,bgId:null};
+              else{
+                const it=await getBgLib(safeRef,bgText,key+' arkaplanı');
+                if(it) page.bg={mode:'image',asset:it.asset,color:'#fff',bgId:it.id};
+              }
+            }catch(err){addImportIssue(report,'skipped',key+': arkaplan okunamadı');}
           }
         }
       }
-      // karakterler
       const sprites=Array.isArray(po.sprites)?po.sprites:[];
       for(const spId of sprites){
-        const sp=po[spId]; if(!sp) continue;
+        if(typeof spId!=='string'||!spId){addImportIssue(report,'skipped',key+': geçersiz sprite kimliği');continue;}
+        const sp=po[spId];
+        if(!sp||typeof sp!=='object'||Array.isArray(sp)){addImportIssue(report,'missing',key+': '+spId+' sprite nesnesi bulunamadı');continue;}
         if(sp.type==='text'){
           const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
           const fy=((typeof sp.ycoor==='number')?sp.ycoor:STAGE_H/2)/STAGE_H;
-          page.texts=page.texts||[];
-          page.texts.push({id:nextId(),str:sp.str||'',
+          page.texts.push({id:nextId(),str:String(sp.str??'').slice(0,2000),
             color:colorToHex(sp.color||'#1a1a1a'),fontsize:sp.fontsize||16,
-            fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),
-            sjrId:spId,sjrMeta:cloneJson(sp)});
-          continue;
+            fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),sjrId:spId,sjrMeta:cloneJson(sp)});
+          report.texts++; continue;
         }
-        if(sp.type!=='sprite') continue;
-        const lib=await getCharLib(sp.md5); if(!lib) continue;
-        if(sp.name && lib.name==='Karakter') lib.name=sp.name;
-        const w=sp.w||lib.asset.w||150, h=sp.h||lib.asset.h||150, aspect=h/w;
+        if(sp.type!=='sprite'){addImportIssue(report,'skipped',key+': '+spId+' desteklenmeyen sprite tipi ('+String(sp.type||'yok')+')');continue;}
+        const lib=await getCharLib(sp.md5,key+' / '+spId);
+        if(!lib){addImportIssue(report,'skipped',key+': '+spId+' karakteri asset eksik olduğu için atlandı');continue;}
+        if(sp.name&&lib.name==='Karakter') lib.name=safeDisplayName(sp.name,'Karakter');
+        if(Array.isArray(sp.sounds)){
+          for(const ref of sp.sounds){
+            const base=String(ref||'').replace(/^.*[\\/]/,'');
+            if(base&&base!=='pop.mp3'&&!soundBases.has(base)) addImportIssue(report,'missing',key+' / '+spId+': ses bulunamadı '+base);
+          }
+        }
+        const w=sp.w||lib.asset.w||150,h=sp.h||lib.asset.h||150,aspect=h/w;
         const scale=(typeof sp.scale==='number')?sp.scale:((typeof sp.defaultScale==='number')?sp.defaultScale:(STAGE_W*0.27/w));
         const sizePct=Math.max(4,Math.min(100,(scale*w)/STAGE_W*100));
         const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
         const fy=((typeof sp.ycoor==='number')?sp.ycoor:STAGE_H/2)/STAGE_H;
-        page.chars.push({ id:nextId(), libId:lib.id, name:sp.name||lib.name||'Karakter',
-          asset:lib.asset, fx:Math.max(0,Math.min(1,fx)), fy:Math.max(0,Math.min(1,fy)), sizePct, flip:!!sp.flip, aspect,
-          sjrId:spId,sjrMeta:cloneJson(sp) });
+        page.chars.push({id:nextId(),libId:lib.id,name:safeDisplayName(sp.name||lib.name,'Karakter'),
+          asset:lib.asset,fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),sizePct,flip:!!sp.flip,aspect,
+          sjrId:spId,sjrMeta:cloneJson(sp)});
       }
     }
-    ns.pages.push(page);
+    ns.pages.push(page); report.pages++;
   }
-  if(!ns.pages.length) ns.pages.push(newPage());
+  if(!ns.pages.length){ns.pages.push(newPage());report.pages=1;}
 
-  // mevcut durumu tamamen değiştir
+  checkpoint();
   Object.assign(state,ns); state.current=Math.max(0,Math.min(ns.current,ns.pages.length-1)); state.selected=null;
-  document.getElementById('pname').value=(data && data.name)?String(data.name).slice(0,40):'Benim Projem';
+  document.getElementById('pname').value=safeDisplayName(data&&data.name,'Benim Projem').slice(0,40);
   render(); setTab('chars');
+  return report;
 }
 
 document.getElementById('importBtn').onclick=()=>document.getElementById('srjFile').click();
@@ -1950,25 +2047,66 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
       +'<div class="warnline">↶ İçe aktardıktan sonra gerekirse Geri Al ile önceki çalışmana dönebilirsin.</div>'
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
-  checkpoint();
   const btn=document.getElementById('importBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Yükleniyor…';
   try{
-    await importSRJ(file);
-    showToast('✓ Proje içe aktarıldı — düzenleyip yeniden dışa aktarabilirsin');
+    const report=await importSRJ(file);
+    showImportReport(report);
   }catch(err){
     console.error(err);
     showToast('İçe aktarılamadı: '+(err.message||'dosya okunamadı'),'err');
   }finally{ btn.disabled=false; btn.textContent=old; }
 });
 
+
+function showImportReport(report){
+  const ov=document.getElementById('importReportOverlay');
+  const summary=document.getElementById('importReportSummary');
+  const issues=document.getElementById('importReportIssues');
+  const parts=[
+    report.pages+' sayfa',
+    report.characters+' karakter asseti',
+    report.texts+' metin',
+    report.backgrounds+' arkaplan',
+    report.sounds+' ses'
+  ];
+  summary.textContent='Yüklendi: '+parts.join(' · ');
+  issues.replaceChildren();
+  if(report.issues.length){
+    for(const issue of report.issues){
+      const li=document.createElement('li');
+      li.className='import-issue '+issue.kind;
+      li.textContent=(issue.kind==='missing'?'Eksik: ':issue.kind==='skipped'?'Atlandı: ':'Uyarı: ')+issue.message;
+      issues.appendChild(li);
+    }
+  }else{
+    const li=document.createElement('li'); li.className='import-issue ok'; li.textContent='Herhangi bir eksik veya atlanan öğe tespit edilmedi.'; issues.appendChild(li);
+  }
+  ov.classList.add('show'); document.getElementById('importReportClose').focus();
+}
+function closeImportReport(){document.getElementById('importReportOverlay').classList.remove('show');}
+document.getElementById('importReportClose').onclick=closeImportReport;
+document.getElementById('importReportOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('importReportOverlay'))closeImportReport();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('importReportOverlay').classList.contains('show'))closeImportReport();});
+
 /* ---------- modal onayı ---------- */
+function setSafeModalHtml(target,html){
+  const tpl=document.createElement('template'); tpl.innerHTML=String(html||'');
+  const allowedTags=new Set(['B','SPAN','DIV']);
+  [...tpl.content.querySelectorAll('*')].forEach(el=>{
+    if(!allowedTags.has(el.tagName)){el.replaceWith(document.createTextNode(el.textContent||''));return;}
+    [...el.attributes].forEach(a=>{if(a.name!=='class')el.removeAttribute(a.name);});
+    const cls=el.getAttribute('class');
+    if(cls&&!['fname','warnline'].includes(cls)) el.removeAttribute('class');
+  });
+  target.replaceChildren(tpl.content.cloneNode(true));
+}
 function confirmModal(opts){
   opts=opts||{};
   return new Promise(res=>{
     const ov=document.getElementById('confirmOverlay');
     const okBtn=document.getElementById('confirmOk'), cancelBtn=document.getElementById('confirmCancel');
     document.getElementById('confirmTitle').textContent=opts.title||'Emin misin?';
-    document.getElementById('confirmBody').innerHTML=opts.bodyHtml||'';
+    setSafeModalHtml(document.getElementById('confirmBody'),opts.bodyHtml||'');
     okBtn.textContent=opts.okText||'Evet';
     cancelBtn.textContent=opts.cancelText||'Vazgeç';
     function close(val){
