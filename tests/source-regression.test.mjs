@@ -33,6 +33,7 @@ test('runtime has no remote CDN or Google Font dependencies',async()=>{
   const css=await readFile(new URL('../app.css',import.meta.url),'utf8');
   assert.doesNotMatch(index,/https?:\/\//);
   assert.doesNotMatch(css,/fonts\.googleapis|fonts\.gstatic/);
+  assert.doesNotMatch(app,/cdnjs\.cloudflare|cdn\.jsdelivr|unpkg\.com|fonts\.googleapis|fonts\.gstatic/);
   assert.match(index,/vendor\/jszip\.min\.js/);
   assert.match(index,/vendor\/spark-md5\.min\.js/);
   assert.match(index,/vendor\/imagetracer_v1\.2\.6\.js/);
