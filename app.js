@@ -99,7 +99,7 @@ document.addEventListener('keydown',e=>{
 
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
-let autosaveTimer=null, autosaveErrorShown=false;
+let autosaveTimer=null, autosaveErrorShown=false, autosaveGeneration=0;
 function setAutosaveStatus(kind,text){
   const el=document.getElementById('autosaveStatus'),label=document.getElementById('autosaveStatusText');
   if(!el||!label) return;
@@ -151,15 +151,19 @@ function autosavePayload(){
 }
 function scheduleAutosave(){
   clearTimeout(autosaveTimer);
+  const generation=++autosaveGeneration;
   setAutosaveStatus('saving','Değişiklik var');
   autosaveTimer=setTimeout(async()=>{
+    if(generation!==autosaveGeneration) return;
     setAutosaveStatus('saving','Kaydediliyor…');
     try{
       await idbPut(autosavePayload());
+      if(generation!==autosaveGeneration) return;
       autosaveErrorShown=false;
       setAutosaveStatus('saved',savedTimeLabel());
     }catch(err){
       console.warn('Autosave failed',err);
+      if(generation!==autosaveGeneration) return;
       setAutosaveStatus('error','Kayıt başarısız');
       if(!autosaveErrorShown){ autosaveErrorShown=true; showToast('Otomatik kayıt başarısız oldu — tarayıcı depolama alanını kontrol et','err'); }
     }
@@ -869,6 +873,7 @@ function renderPageThumbSync(page,w,h){
   return cv.toDataURL('image/png');
 }
 function renderPages(){
+  if(renderPagesTimer){clearTimeout(renderPagesTimer);renderPagesTimer=null;}
   const panel=document.getElementById('pagesPanel'); panel.innerHTML='';
   state.pages.forEach((p,i)=>{
     const row=document.createElement('div'); row.className='page-row';
