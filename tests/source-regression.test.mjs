@@ -41,7 +41,7 @@ test('runtime has no remote CDN or Google Font dependencies',async()=>{
 
 test('service worker caches all runtime dependencies',async()=>{
   const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
-  for(const asset of ['index.html','app.css','app.js','roundtrip-utils.mjs','vendor/jszip.min.js','vendor/spark-md5.min.js','vendor/imagetracer_v1.2.6.js']){
+  for(const asset of ['index.html','app.css','app.js','roundtrip-utils.mjs','ui-utils.mjs','file-utils.mjs','vendor/jszip.min.js','vendor/spark-md5.min.js','vendor/imagetracer_v1.2.6.js']){
     assert.ok(sw.includes(asset),asset+' missing from service-worker cache');
   }
   assert.match(app,/serviceWorker\.register\('\.\/sw\.js'\)/);
@@ -241,7 +241,8 @@ test('import and export expose staged operation progress',async()=>{
   assert.match(index,/id="operationProgress"/);
   assert.match(index,/id="operationProgressBar"/);
   assert.match(index,/id="operationProgressLabel"/);
-  assert.match(app,/function startOperation\(title\)/);
+  const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
+  assert.match(ui,/export function startOperation\(title,doc=document\)/);
   assert.match(app,/startOperation\('Dışa aktarılıyor'\)/);
   assert.match(app,/startOperation\('İçe aktarılıyor'\)/);
   assert.match(app,/async function importSRJ\(file,progress=\(\)=>\{\}\)/);
@@ -302,4 +303,21 @@ test('transfer operations are mutually exclusive and progress announcements stay
   assert.match(index,/id="operationProgressLabel" role="status" aria-live="polite"/);
   assert.match(app,/if\(label\.textContent!==nextText\) label\.textContent=nextText/);
   assert.match(app,/op\.update\(pct,'Arşiv sıkıştırılıyor…'\)/);
+});
+
+
+test('app imports extracted utility modules and service worker caches them',async()=>{
+  const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
+  const file=await readFile(new URL('../file-utils.mjs',import.meta.url),'utf8');
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.match(app,/from '\.\/ui-utils\.mjs'/);
+  assert.match(app,/from '\.\/file-utils\.mjs'/);
+  assert.match(app,/createDialogManager\(document\)/);
+  assert.doesNotMatch(app,/function showDialog\(overlay,initialFocus,onEscape\)/);
+  assert.doesNotMatch(app,/function b64\(value\)/);
+  assert.match(ui,/export function createDialogManager/);
+  assert.match(file,/export function b64/);
+  assert.match(file,/export function colorToHex/);
+  assert.match(sw,/\.\/ui-utils\.mjs/);
+  assert.match(sw,/\.\/file-utils\.mjs/);
 });
