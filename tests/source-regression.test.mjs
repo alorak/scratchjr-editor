@@ -116,3 +116,62 @@ test('sound preview cancels stale async decodes',()=>{
   assert.match(app,/if\(generation!==playbackGeneration\) return/);
   assert.match(app,/generation===playbackGeneration&&currentPlayingId===s\.id/);
 });
+
+test('import resolver avoids ambiguous basename fallback and unsafe paths',()=>{
+  assert.match(app,/function buildZipIndex\(zip\)/);
+  assert.match(app,/function resolveZipFile\(index,candidates,report,label\)/);
+  assert.match(app,/matches\.length>1/);
+  assert.match(app,/belirsiz olduğu için atlandı/);
+  assert.match(app,/normalizeArchivePath\(original\)/);
+  assert.doesNotMatch(app,/if\(!found && !zf\.dir && p\.toLowerCase\(\)\.split\('\/'\)\.pop\(\)===base\) found=zf/);
+});
+
+test('import validates project metadata before replacing state',()=>{
+  const validateAt=app.indexOf('validateScratchJrProject(data,MAX_PAGES)');
+  const assignAt=app.indexOf('Object.assign(state,ns)');
+  assert.ok(validateAt>=0&&assignAt>validateAt);
+  assert.match(app,/readJsonEntry\(dataFile,'data\.json'\)/);
+  assert.match(app,/MAX_METADATA_BYTES=2\*MB/);
+  assert.match(app,/checkpoint\(\);\s*Object\.assign\(state,ns\)/);
+});
+
+test('import produces a user-visible validation report',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(index,/id="importReportOverlay"/);
+  assert.match(index,/id="importReportSummary"/);
+  assert.match(index,/id="importReportIssues"/);
+  assert.match(app,/function showImportReport\(report\)/);
+  assert.match(app,/const report=await importSRJ\(file\)/);
+  assert.match(app,/showImportReport\(report\)/);
+});
+
+test('manifest and sound maps avoid prototype-key object maps',()=>{
+  assert.match(app,/const sndNameByFile=new Map\(\)/);
+  assert.match(app,/Object\.prototype\.hasOwnProperty\.call\(po,spId\)/);
+  assert.match(app,/soundGroups=new Map\(\)/);
+});
+
+test('confirmation modal sanitizes its limited HTML surface',()=>{
+  assert.match(app,/function setSafeModalHtml\(target,html\)/);
+  assert.match(app,/allowedTags=new Set\(\['B','SPAN','DIV'\]\)/);
+  assert.match(app,/if\(a\.name!=='class'\)el\.removeAttribute\(a\.name\)/);
+  assert.doesNotMatch(app,/document\.getElementById\('confirmBody'\)\.innerHTML=/);
+});
+
+test('CSP keeps runtime resources same-origin',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(index,/Content-Security-Policy/);
+  assert.match(index,/script-src 'self'/);
+  assert.match(index,/connect-src 'self'/);
+  assert.match(index,/object-src 'none'/);
+});
+
+test('minimal CI runs syntax checks and node tests',async()=>{
+  const pkg=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));
+  const workflow=await readFile(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
+  assert.equal(pkg.scripts.ci,'npm run check && npm test');
+  assert.match(pkg.scripts.check,/node --check app\.js/);
+  assert.match(workflow,/actions\/checkout@v4/);
+  assert.match(workflow,/actions\/setup-node@v4/);
+  assert.match(workflow,/npm run ci/);
+});

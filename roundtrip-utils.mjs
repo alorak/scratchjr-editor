@@ -160,3 +160,53 @@ export function inspectSvgCompatibility(text){
     fallbackReasons:reasons
   };
 }
+
+
+export function normalizeArchivePath(value){
+  const raw=String(value??'').trim().replace(/\\/g,'/');
+  if(!raw || raw.includes('\0') || raw.startsWith('/') || /^[A-Za-z]:\//.test(raw)) return null;
+  const out=[];
+  for(const part of raw.split('/')){
+    if(!part || part==='.') continue;
+    if(part==='..') return null;
+    out.push(part);
+  }
+  return out.length?out.join('/'):null;
+}
+
+export function validateScratchJrProject(data,maxPages=4){
+  const errors=[],warnings=[];
+  if(!data || typeof data!=='object' || Array.isArray(data)){
+    return {errors:['data.json kök değeri bir nesne olmalı'],warnings,pageKeys:[],json:null,wrapped:false};
+  }
+  const wrapped=!!(data.json && typeof data.json==='object' && !Array.isArray(data.json));
+  const json=wrapped?data.json:data;
+  if(!json || typeof json!=='object' || Array.isArray(json)){
+    errors.push('ScratchJr json alanı bir nesne olmalı');
+    return {errors,warnings,pageKeys:[],json:null,wrapped};
+  }
+  if(!Array.isArray(json.pages)){
+    errors.push('ScratchJr pages alanı bir dizi olmalı');
+    return {errors,warnings,pageKeys:[],json,wrapped};
+  }
+  const pageKeys=json.pages.filter(x=>typeof x==='string'&&x.trim()).map(x=>x.trim());
+  if(pageKeys.length!==json.pages.length) errors.push('pages dizisindeki tüm değerler geçerli sayfa kimliği olmalı');
+  if(new Set(pageKeys).size!==pageKeys.length) errors.push('pages dizisinde yinelenen sayfa kimliği var');
+  if(pageKeys.length>maxPages) errors.push('Proje '+pageKeys.length+' sayfa içeriyor; en fazla '+maxPages+' sayfa destekleniyor');
+  if(!pageKeys.length) warnings.push('Projede sayfa bulunamadı; boş bir sayfa oluşturulacak');
+  for(const key of pageKeys){
+    const page=json[key];
+    if(!page || typeof page!=='object' || Array.isArray(page)){
+      warnings.push(key+': sayfa nesnesi bulunamadı');
+      continue;
+    }
+    if(page.sprites!=null && !Array.isArray(page.sprites)) warnings.push(key+': sprites alanı dizi değil; boş kabul edilecek');
+    if(Array.isArray(page.sprites)){
+      for(const id of page.sprites){
+        if(typeof id!=='string'||!id){warnings.push(key+': geçersiz sprite kimliği atlandı');continue;}
+        if(!page[id] || typeof page[id]!=='object' || Array.isArray(page[id])) warnings.push(key+': '+id+' sprite nesnesi bulunamadı');
+      }
+    }
+  }
+  return {errors,warnings,pageKeys,json,wrapped};
+}
