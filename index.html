@@ -1242,7 +1242,11 @@ document.getElementById('tabbar').addEventListener('click',e=>{
   const t=e.target.closest('.tab'); if(!t) return; setTab(t.dataset.tab);
 });
 function setTab(name){
-  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.tab').forEach(t=>{
+    const active=t.dataset.tab===name;
+    t.classList.toggle('active',active);
+    t.setAttribute('aria-selected',active?'true':'false');
+  });
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
   if(name==='stage'){ render(); }
   if(name==='bg'){ renderBgTab(); }
@@ -1261,7 +1265,7 @@ function syncConv(){
 }
 
 /* ---------- render ---------- */
-function render(){ renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); }
+function render(){ renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons(); scheduleAutosave(); }
 function renderBadges(){
   document.getElementById('badgeChars').textContent=state.charLib.length;
   document.getElementById('badgeBg').textContent=state.bgLib.length;
@@ -1281,6 +1285,7 @@ function renderCharLib(){
     nm.title='Yeniden adlandırmak için tıkla';
     nm.onclick=function editName(ev){
       ev.stopPropagation();
+      checkpoint();
       const nmEl=ev.currentTarget;
       const inp=document.createElement('input'); inp.className='nm-input';
       inp.type='text'; inp.value=it.name; inp.maxLength=30;
@@ -1300,15 +1305,25 @@ function renderCharLib(){
     };
     const addBtn=document.createElement('div'); addBtn.className='add'; addBtn.textContent='+ Sahneye ekle';
     d.append(tag, ph, nm, addBtn);
-    d.onclick=()=>{ placeChar(it); setTab('stage'); render(); showToast(it.name+' sahneye eklendi'); };
-    const x=document.createElement('button'); x.className='x'; x.textContent='×';
+    const place=()=>{ checkpoint(); placeChar(it); setTab('stage'); render(); showToast(it.name+' sahneye eklendi'); };
+    d.onclick=place; d.tabIndex=0; d.setAttribute('role','button'); d.setAttribute('aria-label',it.name+' karakterini sahneye ekle');
+    d.onkeydown=e=>{ if((e.key==='Enter'||e.key===' ')&&e.target===d){ e.preventDefault(); place(); } };
+    const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',it.name+' karakterini kütüphaneden sil');
     x.onclick=ev=>{ ev.stopPropagation(); removeCharLib(it); };
     const ib=document.createElement('button'); ib.className='info'; ib.textContent='i';
-    ib.title='SVG bilgileri'; ib.onclick=ev=>{ ev.stopPropagation(); showSvgInfo(it); };
+    ib.title='SVG bilgileri'; ib.setAttribute('aria-label',it.name+' SVG bilgileri'); ib.onclick=ev=>{ ev.stopPropagation(); showSvgInfo(it); };
     d.appendChild(x); d.appendChild(ib); wrap.appendChild(d);
   });
 }
-function removeCharLib(it){
+async function removeCharLib(it){
+  const used=state.pages.reduce((n,p)=>n+p.chars.filter(c=>c.libId===it.id).length,0);
+  const onay=await confirmModal({
+    title:'Karakteri kütüphaneden sil',
+    bodyHtml:`<b>${escapeHtml(it.name)}</b> silinsin mi?`+(used?`<div class="warnline">⚠ ${used} sahne örneği de kaldırılacak.</div>`:''),
+    okText:'Evet, sil', cancelText:'Vazgeç'
+  });
+  if(!onay) return;
+  checkpoint();
   state.charLib=state.charLib.filter(z=>z!==it);
   state.pages.forEach(p=>{ p.chars=p.chars.filter(c=>c.libId!==it.id); });
   render();
@@ -1324,8 +1339,10 @@ function renderBgTab(){
       <div class="ph"><img src="${it.asset.dataURL}" alt=""></div>
       <div class="nm">${escapeHtml(it.name)}</div>
       <div class="add">Bu sayfaya uygula</div>`;
-    d.onclick=()=>{ applyBg(it); renderBgTab(); showToast('Arkaplan Sayfa '+(state.current+1)+'\'e uygulandı'); };
-    const x=document.createElement('button'); x.className='x'; x.textContent='×';
+    const apply=()=>{ checkpoint(); applyBg(it); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan Sayfa '+(state.current+1)+'\'e uygulandı'); };
+    d.onclick=apply; d.tabIndex=0; d.setAttribute('role','button'); d.setAttribute('aria-label',it.name+' arkaplanını bu sayfaya uygula');
+    d.onkeydown=e=>{ if((e.key==='Enter'||e.key===' ')&&e.target===d){ e.preventDefault(); apply(); } };
+    const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',it.name+' arkaplanını kütüphaneden sil');
     x.onclick=ev=>{ ev.stopPropagation(); removeBgLib(it); };
     d.appendChild(x); wrap.appendChild(d);
   });
@@ -1334,10 +1351,18 @@ function renderBgTab(){
   note.innerHTML=`Şu an düzenlenen: <b>Sayfa ${state.current+1}</b> — arkaplan: ${cur}. (Sayfayı değiştirmek için Sahne sekmesini kullan.)`;
   document.getElementById('bgColor').value = page.bg.mode==='color'?page.bg.color:'#eaf4ff';
 }
-function removeBgLib(it){
+async function removeBgLib(it){
+  const used=state.pages.filter(p=>p.bg.bgId===it.id).length;
+  const onay=await confirmModal({
+    title:'Arkaplanı kütüphaneden sil',
+    bodyHtml:`<b>${escapeHtml(it.name)}</b> silinsin mi?`+(used?`<div class="warnline">⚠ ${used} sayfanın arkaplanı varsayılan renge dönecek.</div>`:''),
+    okText:'Evet, sil', cancelText:'Vazgeç'
+  });
+  if(!onay) return;
+  checkpoint();
   state.bgLib=state.bgLib.filter(z=>z!==it);
   state.pages.forEach(p=>{ if(p.bg.bgId===it.id) p.bg={mode:'color',color:'#eaf4ff',asset:null,bgId:null}; });
-  renderBadges(); renderBgTab(); renderStage();
+  render();
 }
 function fmtDur(sec){
   if(sec==null) return '–';
@@ -1360,13 +1385,13 @@ function renderSounds(){
     const nm=document.createElement('span'); nm.className='nm'; nm.textContent=s.name;
     const dur=document.createElement('span'); dur.className='snd-dur';
     dur.textContent=fmtDur(s._duration);
-    const x=document.createElement('button'); x.className='x'; x.textContent='×';
-    x.onclick=()=>{ stopCurrentSound(); state.sounds=state.sounds.filter(z=>z!==s); renderBadges(); renderSounds(); };
+    const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',s.name+' sesini sil');
+    x.onclick=async()=>{ const ok=await confirmModal({title:'Sesi sil',bodyHtml:`<b>${escapeHtml(s.name)}</b> silinsin mi?`,okText:'Evet, sil',cancelText:'Vazgeç'}); if(!ok)return; checkpoint(); stopCurrentSound(); state.sounds=state.sounds.filter(z=>z!==s); render(); };
     top.append(play,nm,dur,x);
 
     // waveform canvas
-    const cvs=document.createElement('canvas'); cvs.className='snd-wave';
-    cvs.onclick=()=>togglePlaySound(s);
+    const cvs=document.createElement('canvas'); cvs.className='snd-wave'; cvs.tabIndex=0; cvs.setAttribute('role','button'); cvs.setAttribute('aria-label',s.name+' sesini oynat veya durdur');
+    cvs.onclick=()=>togglePlaySound(s); cvs.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();togglePlaySound(s);}};
 
     li.append(top,cvs);
     ul.appendChild(li);
@@ -1476,15 +1501,19 @@ function renderPages(){
         bodyHtml:'<b>Sayfa '+(i+1)+'</b> silinecek. Bu sayfadaki tüm karakterler kaldırılır.<div class="warnline">⚠ Bu işlem geri alınamaz.</div>'
       });
       if(!onay) return;
-      state.pages.splice(i,1); state.current=Math.max(0,Math.min(state.current,state.pages.length-1)); state.selected=null; render();
+      checkpoint();
+      state.pages.splice(i,1); state.current=Math.max(0,Math.min(state.current,state.pages.length-1)); state.selected=null; state.selectedText=null; render();
     };
     thumb.append(img,num,del);
-    thumb.onclick=()=>{ state.current=i; state.selected=null; state.selectedText=null; render(); };
+    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; render(); };
+    thumb.onclick=selectPage; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label','Sayfa '+(i+1)+' seç');
+    thumb.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===thumb){e.preventDefault();selectPage();}};
     row.append(acts,thumb);
     panel.appendChild(row);
   });
-  const add=document.createElement('button'); add.className='add-page'; add.textContent='+'; add.title='Yeni sayfa ekle';
-  add.onclick=()=>{ state.pages.push(newPage()); state.current=state.pages.length-1; state.selected=null; state.selectedText=null; render(); };
+  const add=document.createElement('button'); add.className='add-page'; add.textContent='+'; add.title=state.pages.length>=MAX_PAGES?'ScratchJr en fazla 4 sayfa destekler':'Yeni sayfa ekle';
+  add.disabled=state.pages.length>=MAX_PAGES; add.setAttribute('aria-label',add.title);
+  add.onclick=()=>{ if(state.pages.length>=MAX_PAGES){showToast('ScratchJr en fazla 4 sayfa destekler','err');return;} checkpoint(); state.pages.push(newPage()); state.current=state.pages.length-1; state.selected=null; state.selectedText=null; render(); };
   panel.appendChild(add);
 }
 const stageEl=document.getElementById('stage');
@@ -1576,7 +1605,9 @@ function renderSelPanel(){
     img.src=c.asset.dataURL||''; img.alt=c.name||'';
     img.style.transform=c.flip?'scaleX(-1)':'none';
     thumb.appendChild(img);
-    thumb.onclick=()=>{ state.selected=c.id; renderStage(); renderSelPanel(); };
+    const selectChar=()=>{ state.selected=c.id; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); };
+    thumb.onclick=selectChar; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label',(c.name||'Karakter')+' seç');
+    thumb.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectChar();}};
     list.appendChild(thumb);
   });
 
@@ -1610,6 +1641,7 @@ function attachDrag(el,c){
     renderSelPanel();
     renderTextPanel();
     const rect=stageEl.getBoundingClientRect();
+    checkpoint();
     el.setPointerCapture(e.pointerId); el.style.cursor='grabbing';
     const move=ev=>{
       c.fx=Math.max(0,Math.min(1,(ev.clientX-rect.left)/rect.width));
@@ -1619,8 +1651,8 @@ function attachDrag(el,c){
       el.style.top=(c.fy*rect.height-dispH/2)+'px';
       updateGridLabels();
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.style.cursor='grab'; };
-    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up);
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
 
@@ -1656,10 +1688,12 @@ function renderTextPanel(){
       preview.className='text-item-preview'; preview.style.color=t.color;
       preview.textContent=t.str||'(boş)';
       item.appendChild(preview);
-      item.onclick=()=>{ state.selectedText=t.id; state.selected=null;
+      const selectText=()=>{ state.selectedText=t.id; state.selected=null;
         stageEl.querySelectorAll('.sprite').forEach(s=>s.classList.remove('sel'));
         stageEl.querySelectorAll('.stage-text').forEach(s=>s.classList.toggle('sel',s.dataset.textId===t.id));
         renderTextPanel(); renderSelPanel(); };
+      item.onclick=selectText; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',(t.str||'Boş yazı')+' seç');
+      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectText();}};
       list.appendChild(item);
     });
   }
@@ -1676,13 +1710,16 @@ function renderTextPanel(){
       const sw=document.createElement('div');
       sw.className='text-color-swatch'+(selHex===c?' active':'');
       sw.style.background=c; sw.title=c;
-      sw.onclick=()=>{ sel.color=c; renderTextPanel(); renderStage(); renderPages(); };
+      sw.tabIndex=0; sw.setAttribute('role','button'); sw.setAttribute('aria-label','Yazı rengini '+c+' yap');
+      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();};
+      sw.onclick=setColor; sw.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setColor();}};
       colorRow.appendChild(sw);
     });
     const custom=document.createElement('input');
     custom.type='color'; custom.className='text-custom-color'; custom.title='Özel renk';
     custom.value=selHex;
-    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); renderPages(); };
+    custom.onpointerdown=()=>checkpoint();
+    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave(); };
     colorRow.appendChild(custom);
   } else {
     editPanel.style.display='none';
@@ -1697,6 +1734,7 @@ function attachTextDrag(el,t){
     stageEl.querySelectorAll('.sprite').forEach(s=>s.classList.remove('sel'));
     renderTextPanel(); renderSelPanel();
     const rect=stageEl.getBoundingClientRect();
+    checkpoint();
     el.setPointerCapture(e.pointerId); el.style.cursor='grabbing';
     const move=ev=>{
       t.fx=Math.max(0,Math.min(1,(ev.clientX-rect.left)/rect.width));
@@ -1704,12 +1742,13 @@ function attachTextDrag(el,t){
       el.style.left=(t.fx*rect.width)+'px';
       el.style.top=(t.fy*rect.height)+'px';
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.style.cursor='grab'; };
-    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up);
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
 
 document.getElementById('textAddBtn').onclick=()=>{
+  checkpoint();
   const page=state.pages[state.current];
   page.texts=page.texts||[];
   const t={id:nextId(),str:'Yazı',color:TEXT_COLORS[5],fontsize:16,fx:0.5,fy:0.5};
@@ -1717,6 +1756,7 @@ document.getElementById('textAddBtn').onclick=()=>{
   renderTextPanel(); renderStage(); renderSelPanel(); renderPages();
 };
 
+document.getElementById('textStrInput').addEventListener('focus',()=>checkpoint());
 document.getElementById('textStrInput').addEventListener('input',e=>{
   const t=getSelText(); if(!t) return;
   t.str=e.target.value;
@@ -1724,19 +1764,20 @@ document.getElementById('textStrInput').addEventListener('input',e=>{
   if(tel) tel.textContent=t.str;
   const listEl=document.querySelector('#textItemList .text-item.sel .text-item-preview');
   if(listEl){ listEl.textContent=t.str||'(boş)'; listEl.style.color=t.color; }
+  renderPages(); scheduleAutosave();
 });
 
 document.getElementById('textSizeDown').onclick=()=>{
-  const t=getSelText(); if(!t) return;
+  const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.max(8,t.fontsize-2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage();
+  renderStage(); renderPages(); scheduleAutosave();
 };
 document.getElementById('textSizeUp').onclick=()=>{
-  const t=getSelText(); if(!t) return;
+  const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.min(96,t.fontsize+2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage();
+  renderStage(); renderPages(); scheduleAutosave();
 };
 
 document.getElementById('textDelBtn').onclick=async()=>{
@@ -1747,17 +1788,19 @@ document.getElementById('textDelBtn').onclick=async()=>{
     okText:'Evet, sil', cancelText:'Vazgeç'
   });
   if(!onay) return;
+  checkpoint();
   const page=state.pages[state.current];
   page.texts=page.texts.filter(z=>z!==t);
   state.selectedText=null; renderTextPanel(); renderStage(); renderPages();
 };
 
 /* ---------- kontroller ---------- */
-function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); }
-document.getElementById('sizeDown').onclick=()=>{ const c=getSel(); if(c) changeSizePct(c.sizePct-5); };
-document.getElementById('sizeUp').onclick=()=>{ const c=getSel(); if(c) changeSizePct(c.sizePct+5); };
+function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave(); }
+document.getElementById('sizeDown').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct-5);} };
+document.getElementById('sizeUp').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct+5);} };
+document.getElementById('sizeRange').addEventListener('pointerdown',()=>{if(getSel())checkpoint();});
 document.getElementById('sizeRange').addEventListener('input',e=>changeSizePct(+e.target.value));
-document.getElementById('flipBtn').onclick=()=>{ const c=getSel(); if(!c)return showToast('Önce bir karakter seç'); c.flip=!c.flip; renderStage(); renderSelPanel(); };
+document.getElementById('flipBtn').onclick=()=>{ const c=getSel(); if(!c)return showToast('Önce bir karakter seç'); checkpoint(); c.flip=!c.flip; renderStage(); renderSelPanel(); renderPages(); scheduleAutosave(); };
 document.getElementById('delBtn').onclick=async()=>{
   const c=getSel(); if(!c)return showToast('Önce bir karakter seç');
   const onay=await confirmModal({
@@ -1766,6 +1809,7 @@ document.getElementById('delBtn').onclick=async()=>{
     okText:'Evet, sil', cancelText:'Vazgeç'
   });
   if(!onay) return;
+  checkpoint();
   const p=state.pages[state.current]; p.chars=p.chars.filter(z=>z!==c);
   state.selected=null; renderStage(); renderSelPanel(); renderPages();
 };
@@ -1774,23 +1818,27 @@ document.getElementById('delBtn').onclick=async()=>{
 document.getElementById('charUpload').onclick=()=>document.getElementById('charFile').click();
 document.getElementById('charFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
+  if(files.length) checkpoint();
   for(const f of files){ try{ const a=await fileToAsset(f); addCharToLib(a, baseName(f.name)); }catch(err){ console.error(err); showToast('Okunamadı: '+f.name,'err'); } }
   renderBadges(); renderCharLib(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
 });
 document.getElementById('bgUpload').onclick=()=>document.getElementById('bgFile').click();
 document.getElementById('bgFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
+  if(files.length) checkpoint();
   for(const f of files){ try{ const a=await fileToAsset(f); const it=addBgToLib(a, baseName(f.name)); if(files.length===1) applyBg(it); }catch(err){ showToast('Arkaplan okunamadı','err'); } }
-  renderBadges(); renderBgTab(); renderStage(); showToast('Arkaplan eklendi');
+  renderBadges(); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan eklendi');
 });
-document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); });
-document.getElementById('bgClear').onclick=()=>{ state.pages[state.current].bg={mode:'color',color:'#eaf4ff',asset:null,bgId:null}; renderBgTab(); renderStage(); };
+document.getElementById('bgColor').addEventListener('pointerdown',()=>checkpoint());
+document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); });
+document.getElementById('bgClear').onclick=()=>{ checkpoint(); state.pages[state.current].bg={mode:'color',color:'#eaf4ff',asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); };
 
 document.getElementById('sndUpload').onclick=()=>document.getElementById('sndFile').click();
 document.getElementById('sndFile').addEventListener('change',async e=>{
+  if(e.target.files.length) checkpoint();
   for(const f of e.target.files){ const buf=await f.arrayBuffer(); let ext=(f.name.split('.').pop()||'wav').toLowerCase();
     if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav'; state.sounds.push({id:nextId(),name:baseName(f.name),buf,ext}); }
-  e.target.value=''; renderBadges(); renderSounds(); showToast('Ses eklendi');
+  e.target.value=''; renderBadges(); renderSounds(); scheduleAutosave(); showToast('Ses eklendi');
 });
 
 /* ---- SES KAYIT MODALI ---- */
@@ -2315,6 +2363,7 @@ async function importSRJ(file){
   const data=JSON.parse(await dataFile.async('string'));
   const J=(data && data.json) ? data.json : (data||{});
   const pageKeys=Array.isArray(J.pages)?J.pages:[];
+  if(pageKeys.length>MAX_PAGES) throw new Error('Bu proje '+pageKeys.length+' sayfa içeriyor. ScratchJr en fazla '+MAX_PAGES+' sayfa destekler.');
 
   const ns={ pages:[], current:0, charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null };
   const charLibByFile=new Map();   // karakter dosyası -> kütüphane öğesi
@@ -2436,6 +2485,7 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
       +'<div class="warnline">⚠ Bu işlem geri alınamaz.</div>'
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
+  checkpoint();
   const btn=document.getElementById('importBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Yükleniyor…';
   try{
     await importSRJ(file);
@@ -2642,7 +2692,9 @@ function openBgPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      item.onclick=()=>{ applyBgToPage(pageIdx,it); closeBgPick(); };
+      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); };
+      item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' arkaplanını seç');
+      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
     });
   }
@@ -2656,6 +2708,7 @@ function applyBgToPage(pageIdx,libItem){
 }
 document.getElementById('bgPickClose').onclick=closeBgPick;
 document.getElementById('bgPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('bgPickOverlay')) closeBgPick(); });
+document.getElementById('bgPickColor').addEventListener('pointerdown',()=>{if(bgPickTarget!==null)checkpoint();});
 document.getElementById('bgPickColor').addEventListener('input',e=>{
   if(bgPickTarget===null) return;
   state.pages[bgPickTarget].bg={mode:'color',color:e.target.value,asset:null,bgId:null};
@@ -2678,7 +2731,9 @@ function openCharPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      item.onclick=()=>{ addCharToPage(pageIdx,it); closeCharPick(); };
+      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); };
+      item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' karakterini ekle');
+      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
     });
   }
@@ -2704,9 +2759,16 @@ function showToast(msg,kind){ const t=document.getElementById('toast'); t.textCo
   clearTimeout(toastTimer); toastTimer=setTimeout(()=>t.className='toast'+(kind==='err'?' err':''),2600); }
 
 /* ---------- başlat ---------- */
-window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')) renderStage(); });
+document.getElementById('pname').addEventListener('input',scheduleAutosave);
+window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); renderPages(); } });
 stageEl.addEventListener('pointerdown',e=>{ if(e.target===stageEl||e.target.classList.contains('grid')||e.target.classList.contains('bgimg')){ state.selected=null; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); }});
-initGridLabels(); syncConv(); render();
+async function boot(){
+  initGridLabels(); syncConv();
+  const restored=await restoreAutosave();
+  render();
+  if(restored) showToast('Otomatik kaydedilen çalışma geri yüklendi');
+}
+boot();
 </script>
 </body>
 </html>
