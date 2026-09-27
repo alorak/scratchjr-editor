@@ -71,7 +71,8 @@ test('pagehide audio cleanup does not trigger a sound-list rerender',()=>{
 
 test('service worker refreshes assets from network before cached fallback',async()=>{
   const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
-  assert.match(sw,/async function networkFirst\(request,fallbackRequest=request\)/);
+  assert.match(sw,/async function networkFirst\(request,fallbackRequest=request,cacheRequest=request\)/);
+  assert.match(sw,/networkFirst\(event\.request,'\.\/index\.html','\.\/index\.html'\)/);
   assert.match(sw,/const response=await fetch\(request\)/);
   assert.match(sw,/caches\.match\(fallbackRequest\)/);
   assert.doesNotMatch(sw,/caches\.match\(event\.request\)[\s\S]{0,160}if\(cached\) return cached/);
