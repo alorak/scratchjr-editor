@@ -146,6 +146,55 @@ try{
     try{interaction=JSON.parse(interactionResult.result?.value||'{}');}catch{interaction=null;}
   }
 
+  let libraryInteraction=null;
+  if(state?.ready){
+    const upload=await client.send('Runtime.evaluate',{
+      expression:`(()=>{
+        const svg='<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><path fill="#ff0000" d="M0 0 L100 0 L100 100 L0 100 Z"/></svg>';
+        const file=new File([svg],'smoke-character.svg',{type:'image/svg+xml'});
+        const dt=new DataTransfer();dt.items.add(file);
+        const input=document.getElementById('charFile');
+        input.files=dt.files;
+        input.dispatchEvent(new Event('change',{bubbles:true}));
+        return true;
+      })()`,
+      returnByValue:true
+    });
+    if(upload.result?.value){
+      const deadline=Date.now()+5000;
+      while(Date.now()<deadline){
+        await wait(100);
+        const probe=await client.send('Runtime.evaluate',{
+          expression:`JSON.stringify({
+            charItems:document.querySelectorAll('#charLib .libitem').length,
+            charBadge:document.getElementById('badgeChars')?.textContent||'0'
+          })`,
+          returnByValue:true
+        });
+        try{libraryInteraction=JSON.parse(probe.result?.value||'{}');}catch{libraryInteraction=null;}
+        if(libraryInteraction?.charItems>0)break;
+      }
+      if(libraryInteraction?.charItems>0){
+        await client.send('Runtime.evaluate',{
+          expression:`document.querySelector('#charLib .libitem')?.click()`,
+          returnByValue:true
+        });
+        await wait(120);
+        const placed=await client.send('Runtime.evaluate',{
+          expression:`JSON.stringify({
+            charItems:document.querySelectorAll('#charLib .libitem').length,
+            charBadge:document.getElementById('badgeChars')?.textContent||'0',
+            stageSprites:document.querySelectorAll('#stage .sprite').length,
+            stageTab:document.getElementById('tab-stage')?.getAttribute('aria-selected')||'',
+            vectorTag:document.querySelector('#charLib .libitem .tag')?.textContent||''
+          })`,
+          returnByValue:true
+        });
+        try{libraryInteraction=JSON.parse(placed.result?.value||'{}');}catch{}
+      }
+    }
+  }
+
   const exceptions=client.events
     .filter(e=>e.method==='Runtime.exceptionThrown')
     .map(e=>e.params?.exceptionDetails?.exception?.description||e.params?.exceptionDetails?.text||'Runtime exception');
@@ -163,6 +212,10 @@ try{
     if(!(interaction?.stageTexts>0)) failed.push('text add stage render');
     if(!(interaction?.selectedTextItem>0)) failed.push('text selection render');
     if(!(interaction?.pageRows>0)) failed.push('page strip after interaction');
+    if(!(libraryInteraction?.charItems>0)) failed.push('SVG character upload');
+    if(!(libraryInteraction?.stageSprites>0)) failed.push('library character placement');
+    if(libraryInteraction?.stageTab!=='true') failed.push('library placement stage navigation');
+    if(libraryInteraction?.vectorTag!=='VEKTÖR') failed.push('SVG vector pipeline');
   }
   if(exceptions.length) failed.push('runtime exception');
 
@@ -171,13 +224,14 @@ try{
       'Browser smoke failed: '+failed.join(', ')+
       '\nState: '+JSON.stringify(state)+
       '\nInteraction: '+JSON.stringify(interaction)+
+      '\nLibrary interaction: '+JSON.stringify(libraryInteraction)+
       '\nRequests: '+JSON.stringify(requests)+
       '\nExceptions: '+exceptions.join(' | ')+
       '\nConsole errors: '+consoleErrors.join(' | ')+
       '\nChrome stderr: '+stderr.slice(-2500)
     );
   }
-  console.log('Browser smoke passed:',JSON.stringify({state,interaction}));
+  console.log('Browser smoke passed:',JSON.stringify({state,interaction,libraryInteraction}));
 }finally{
   try{ws?.close();}catch{}
   try{child.kill('SIGKILL');}catch{}
