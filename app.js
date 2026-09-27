@@ -1,7 +1,9 @@
-import {cloneJson,hasSvgTransform,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
+const MB=1024*1024, MAX_IMAGE_BYTES=10*MB, MAX_SOUND_BYTES=20*MB, MAX_SJR_BYTES=25*MB;
+const MAX_ZIP_ENTRIES=500, MAX_ZIP_UNCOMPRESSED=100*MB, MAX_ZIP_ENTRY=30*MB;
 // ScratchJr varsayılan scale=0.5'te karakter sahnenin ~%27'sini kaplasın:
 // CHAR_CANONICAL_W * 0.5 = STAGE_W * 0.27  →  259 px
 const CHAR_CANONICAL_W = Math.round(STAGE_W * 27 / 50);
@@ -93,7 +95,7 @@ document.addEventListener('keydown',e=>{
 
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
-let autosaveTimer=null;
+let autosaveTimer=null, autosaveErrorShown=false;
 function openAutosaveDb(){
   return new Promise((res,rej)=>{
     if(!('indexedDB' in window)) return rej(new Error('IndexedDB yok'));
@@ -135,7 +137,13 @@ function autosavePayload(){
 }
 function scheduleAutosave(){
   clearTimeout(autosaveTimer);
-  autosaveTimer=setTimeout(()=>idbPut(autosavePayload()).catch(()=>{}),450);
+  autosaveTimer=setTimeout(async()=>{
+    try{ await idbPut(autosavePayload()); }
+    catch(err){
+      console.warn('Autosave failed',err);
+      if(!autosaveErrorShown){ autosaveErrorShown=true; showToast('Otomatik kayıt başarısız oldu — tarayıcı depolama alanını kontrol et','err'); }
+    }
+  },450);
 }
 async function hydrateStoredAsset(a){
   if(!a) return null;
@@ -166,6 +174,21 @@ async function restoreAutosave(){
 }
 
 /* ---------- dosya okuma ---------- */
+function assertFileSize(file,maxBytes,label){
+  if(file && file.size>maxBytes) throw new Error((label||'Dosya')+' çok büyük (maks. '+Math.round(maxBytes/MB)+' MB)');
+}
+function assertZipSafety(zip){
+  let entries=0,total=0,largest=0;
+  zip.forEach((p,zf)=>{
+    if(zf.dir) return;
+    entries++;
+    const n=Number(zf?._data?.uncompressedSize||0);
+    if(Number.isFinite(n)){ total+=n; largest=Math.max(largest,n); }
+  });
+  if(entries>MAX_ZIP_ENTRIES) throw new Error('Arşiv çok fazla dosya içeriyor');
+  if(largest>MAX_ZIP_ENTRY) throw new Error('Arşivde izin verilenden büyük bir dosya var');
+  if(total>MAX_ZIP_UNCOMPRESSED) throw new Error('Arşivin açılmış boyutu güvenli sınırı aşıyor');
+}
 const b64=s=>btoa(unescape(encodeURIComponent(s)));
 function readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
 function readAsText(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsText(f);});}
@@ -460,7 +483,8 @@ async function fileToAsset(file){
     // raster fallback yoluna bırakıyoruz; böylece görünüm kaybolmuyor.
     const hasEmbedded=/<image[\s/>]/i.test(text);
     const hasTransforms=hasSvgTransform(text);
-    if(!hasEmbedded && !hasTransforms){
+    const hasRootPresentation=hasSvgRootPresentation(text);
+    if(!hasEmbedded && !hasTransforms && !hasRootPresentation){
       const norm=normalizeSvgForChar(text, w, h);
       if(norm){
         const normDataURL='data:image/svg+xml;base64,'+b64(norm.text);
@@ -625,10 +649,12 @@ function renderBgTab(){
   state.bgLib.forEach(it=>{
     const d=document.createElement('div'); d.className='libitem bgadd'+(page.bg.bgId===it.id?'':'');
     d.style.outline = (page.bg.mode==='image'&&page.bg.bgId===it.id)?'3px solid var(--blue)':'';
-    d.innerHTML=`<span class="tag ${it.asset.vector?'vec':'emb'}">${it.asset.vector?'VEKTÖR':'GÖMÜLÜ'}</span>
-      <div class="ph"><img src="${it.asset.dataURL}" alt=""></div>
-      <div class="nm">${escapeHtml(it.name)}</div>
-      <div class="add">Bu sayfaya uygula</div>`;
+    const tag=document.createElement('span'); tag.className='tag '+(it.asset.vector?'vec':'emb'); tag.textContent=it.asset.vector?'VEKTÖR':'GÖMÜLÜ';
+    const ph=document.createElement('div'); ph.className='ph';
+    const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=''; ph.appendChild(img);
+    const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
+    const add=document.createElement('div'); add.className='add'; add.textContent='Bu sayfaya uygula';
+    d.append(tag,ph,nm,add);
     const apply=()=>{ checkpoint(); applyBg(it); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan Sayfa '+(state.current+1)+'\'e uygulandı'); };
     d.onclick=apply; d.tabIndex=0; d.setAttribute('role','button'); d.setAttribute('aria-label',it.name+' arkaplanını bu sayfaya uygula');
     d.onkeydown=e=>{ if((e.key==='Enter'||e.key===' ')&&e.target===d){ e.preventDefault(); apply(); } };
@@ -793,7 +819,7 @@ function renderPages(){
         title:'Sayfayı sil',
         okText:'Evet, sil',
         cancelText:'Vazgeç',
-        bodyHtml:'<b>Sayfa '+(i+1)+'</b> silinecek. Bu sayfadaki tüm karakterler kaldırılır.<div class="warnline">⚠ Bu işlem geri alınamaz.</div>'
+        bodyHtml:'<b>Sayfa '+(i+1)+'</b> silinecek. Bu sayfadaki tüm karakterler kaldırılır.<div class="warnline">↶ Gerekirse Geri Al ile işlemi geri çevirebilirsin.</div>'
       });
       if(!onay) return;
       checkpoint();
@@ -1100,7 +1126,7 @@ document.getElementById('delBtn').onclick=async()=>{
   const c=getSel(); if(!c)return showToast('Önce bir karakter seç');
   const onay=await confirmModal({
     title:'Karakteri sil',
-    bodyHtml:`<b>${c.name||'Karakter'}</b> bu sayfadan kaldırılsın mı?`,
+    bodyHtml:`<b>${escapeHtml(c.name||'Karakter')}</b> bu sayfadan kaldırılsın mı?`,
     okText:'Evet, sil', cancelText:'Vazgeç'
   });
   if(!onay) return;
@@ -1114,14 +1140,14 @@ document.getElementById('charUpload').onclick=()=>document.getElementById('charF
 document.getElementById('charFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
   if(files.length) checkpoint();
-  for(const f of files){ try{ const a=await fileToAsset(f); addCharToLib(a, baseName(f.name)); }catch(err){ console.error(err); showToast('Okunamadı: '+f.name,'err'); } }
+  for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Karakter dosyası'); const a=await fileToAsset(f); addCharToLib(a, baseName(f.name)); }catch(err){ console.error(err); showToast((err.message||'Okunamadı')+': '+f.name,'err'); } }
   renderBadges(); renderCharLib(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
 });
 document.getElementById('bgUpload').onclick=()=>document.getElementById('bgFile').click();
 document.getElementById('bgFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
   if(files.length) checkpoint();
-  for(const f of files){ try{ const a=await fileToAsset(f); const it=addBgToLib(a, baseName(f.name)); if(files.length===1) applyBg(it); }catch(err){ showToast('Arkaplan okunamadı','err'); } }
+  for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Arkaplan dosyası'); const a=await fileToAsset(f); const it=addBgToLib(a, baseName(f.name)); if(files.length===1) applyBg(it); }catch(err){ showToast(err.message||'Arkaplan okunamadı','err'); } }
   renderBadges(); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan eklendi');
 });
 document.getElementById('bgColor').addEventListener('pointerdown',()=>checkpoint());
@@ -1131,9 +1157,11 @@ document.getElementById('bgClear').onclick=()=>{ checkpoint(); state.pages[state
 document.getElementById('sndUpload').onclick=()=>document.getElementById('sndFile').click();
 document.getElementById('sndFile').addEventListener('change',async e=>{
   if(e.target.files.length) checkpoint();
-  for(const f of e.target.files){ const buf=await f.arrayBuffer(); let ext=(f.name.split('.').pop()||'wav').toLowerCase();
+  for(const f of e.target.files){ try{ assertFileSize(f,MAX_SOUND_BYTES,'Ses dosyası'); const buf=await f.arrayBuffer(); let ext=(f.name.split('.').pop()||'wav').toLowerCase();
     if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav'; state.sounds.push({id:nextId(),name:baseName(f.name),buf,ext}); }
-  e.target.value=''; renderBadges(); renderSounds(); scheduleAutosave(); showToast('Ses eklendi');
+    catch(err){ showToast((err.message||'Ses okunamadı')+': '+f.name,'err'); }
+  }
+  e.target.value=''; renderBadges(); renderSounds(); scheduleAutosave(); showToast('Sesler işlendi');
 });
 
 /* ---- SES KAYIT MODALI ---- */
@@ -1504,11 +1532,6 @@ async function exportSRJ(pagesArg){
   if(typeof JSZip==='undefined') return showToast('Sıkıştırma kütüphanesi yüklenemedi (internet?)','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
   // Hiç sahneye eklenmemiş karakter uyarısı
-  const totalCharsOnStage=pages.reduce((s,p)=>s+p.chars.length,0);
-  if(totalCharsOnStage===0 && state.charLib.length>0){
-    showToast('⚠ Karakterler sahneye eklenmedi! Karakterler sekmesinde karaktere tıkla, sonra tekrar indir.','err');
-    return;
-  }
   const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
   try{
     const name=(document.getElementById('pname').value||'Benim Projem').trim();
@@ -1535,12 +1558,13 @@ async function exportSRJ(pagesArg){
     function charFile(asset){ if(charCache.has(asset.svgText))return charCache.get(asset.svgText);
       const fn=md5str(asset.svgText)+'.svg'; charsDir.file(fn,asset.svgText); charCache.set(asset.svgText,fn); return fn; }
     function coverSvg(asset){ return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><image width="${STAGE_W}" height="${STAGE_H}" preserveAspectRatio="xMidYMid slice" href="${asset.dataURL}" xlink:href="${asset.dataURL}"/></svg>`; }
-    function backgroundSvg(asset){ return asset&&asset.vector&&asset.svgText ? asset.svgText : coverSvg(asset); }
+    function backgroundSvg(asset){
+      if(asset&&asset.preserveSvg&&asset.svgText) return asset.svgText;
+      return asset&&asset.vector&&asset.svgText ? asset.svgText : coverSvg(asset);
+    }
     function colorSvg(color){ return `<svg xmlns="http://www.w3.org/2000/svg" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><rect width="${STAGE_W}" height="${STAGE_H}" fill="${color}"/></svg>`; }
 
     const jsonObj=state.sjrJsonMeta ? cloneJson(state.sjrJsonMeta) : {};
-    const oldPageKeys=Array.isArray(jsonObj.pages)?[...jsonObj.pages]:[];
-    oldPageKeys.forEach(k=>{ delete jsonObj[k]; });
     jsonObj.pages=[]; jsonObj.currentPage='page '+Math.min(pages.length,Math.max(1,state.current+1));
     let firstThumb=null;
     for(let i=0;i<pages.length;i++){
@@ -1549,8 +1573,6 @@ async function exportSRJ(pagesArg){
       if(page.bg.mode==='image'&&page.bg.asset){ const svg=backgroundSvg(page.bg.asset); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
       else { const svg=colorSvg(page.bg.color||'#ffffff'); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
       const pageObj=page.sjrMeta ? cloneJson(page.sjrMeta) : {textstartat:36};
-      const oldSpriteIds=Array.isArray(pageObj.sprites)?[...pageObj.sprites]:[];
-      oldSpriteIds.forEach(id=>{ delete pageObj[id]; });
       pageObj.sprites=[]; pageObj.md5=bgName; pageObj.num=i+1; pageObj.lastSprite='';
       const emittedIds=[], usedIds=new Set();
       const uniqueSpriteId=(preferred,fallback)=>{
@@ -1590,6 +1612,13 @@ async function exportSRJ(pagesArg){
       jsonObj[key]=pageObj;
       const tb=await renderThumb(page); const tn=i+'_'+md5buf(tb)+'.png'; thumbDir.file(tn,tb); if(i===0)firstThumb=tn;
     }
+    // Karakter kütüphanesindeki kullanılmayan öğeleri de editör round-trip'i için koru.
+    const charManifest=[];
+    for(const it of state.charLib){
+      if(!it.asset) continue;
+      const fn=charFile(it.asset);
+      charManifest.push({file:fn,displayName:it.name||'Karakter'});
+    }
     // bgLib'deki tüm arkaplanları ZIP'e ekle (sayfalara atanmamış olanlar dahil)
     const bgManifest=[];
     for(const it of state.bgLib){
@@ -1601,7 +1630,7 @@ async function exportSRJ(pagesArg){
     }
     // srjlib.json — import sırasında tüm bgLib'i geri yüklemek için
     const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
-    root.file('srjlib.json', JSON.stringify({backgrounds:bgManifest, sounds:sndManifest}));
+    root.file('srjlib.json', JSON.stringify({characters:charManifest, backgrounds:bgManifest, sounds:sndManifest}));
 
     const data=state.sjrDataMeta ? cloneJson(state.sjrDataMeta) : {};
     if(!data.id) data.id=String(Math.floor(Date.now()/1000));
@@ -1644,12 +1673,12 @@ function solidColorSvgFill(svgText){
     return kids[0].getAttribute('fill')||null;
   }catch(e){ return null; }
 }
-async function svgTextToAsset(text){
+async function svgTextToAsset(text,opts={}){
   const hasImage=/<image[\s/>]/i.test(text);
   const {w,h}=svgDims(text);
   const dataURL='data:image/svg+xml;base64,'+b64(text);
   let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
-  return { isSvg:true, vector:!hasImage, svgText:text, dataURL, w:w||150, h:h||150, img };
+  return { isSvg:true, vector:!hasImage, preserveSvg:!!opts.preserveSvg, svgText:text, dataURL, w:w||150, h:h||150, img };
 }
 function findZipFile(zip,candidates){
   for(const c of candidates){ const f=zip.file(c); if(f) return f; }
@@ -1660,8 +1689,10 @@ function findZipFile(zip,candidates){
 }
 
 async function importSRJ(file){
-  if(typeof JSZip==='undefined'){ showToast('Sıkıştırma kütüphanesi yüklenemedi (internet?)','err'); return; }
+  if(typeof JSZip==='undefined') throw new Error('Sıkıştırma kütüphanesi yüklenemedi');
+  assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
   const zip=await JSZip.loadAsync(file);
+  assertZipSafety(zip);
 
   // data.json'u bul (genelde project/data.json)
   let dataFile=null;
@@ -1673,8 +1704,8 @@ async function importSRJ(file){
   const pageKeys=Array.isArray(J.pages)?J.pages:[];
   if(pageKeys.length>MAX_PAGES) throw new Error('Bu proje '+pageKeys.length+' sayfa içeriyor. ScratchJr en fazla '+MAX_PAGES+' sayfa destekler.');
 
-  const ns={ pages:[], current:0, charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null,
-    sjrDataMeta:cloneJson(data), sjrJsonMeta:cloneJson(J) };
+  const ns={ pages:[], current:resolveCurrentPageIndex(J.currentPage,pageKeys), charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null,
+    sjrDataMeta:dataMetaWithoutJson(data), sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys) };
   const charLibByFile=new Map();   // karakter dosyası -> kütüphane öğesi
   const bgLibByFile=new Map();     // arkaplan dosyası -> kütüphane öğesi
 
@@ -1689,7 +1720,7 @@ async function importSRJ(file){
   }
   async function getBgLib(md5file,bgText){
     if(bgLibByFile.has(md5file)) return bgLibByFile.get(md5file);
-    const asset=await svgTextToAsset(bgText);
+    const asset=await svgTextToAsset(bgText,{preserveSvg:true});
     const it={ id:nextId(), name:'Arkaplan', asset };
     ns.bgLib.push(it); bgLibByFile.set(md5file,it); return it;
   }
@@ -1729,7 +1760,7 @@ async function importSRJ(file){
     const po=J[pageKeys[i]];
     const page=newPage();
     if(po){
-      page.sjrMeta=cloneJson(po);
+      page.sjrMeta=pageMetaWithoutSprites(po);
       // arkaplan
       if(po.md5){
         const bf=findZipFile(zip,[prefix+'backgrounds/'+po.md5,'backgrounds/'+po.md5]);
@@ -1776,7 +1807,7 @@ async function importSRJ(file){
   if(!ns.pages.length) ns.pages.push(newPage());
 
   // mevcut durumu tamamen değiştir
-  Object.assign(state,ns); state.current=0; state.selected=null;
+  Object.assign(state,ns); state.current=Math.max(0,Math.min(ns.current,ns.pages.length-1)); state.selected=null;
   document.getElementById('pname').value=(data && data.name)?String(data.name).slice(0,40):'Benim Projem';
   render(); setTab('chars');
 }
@@ -1791,7 +1822,7 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
     cancelText:'Vazgeç',
     bodyHtml:'Bu işlem <b>şu anki tüm çalışmanı</b> — karakterler, arkaplanlar, sesler ve sahneler — '
       +'kaldırıp yerine <span class="fname">'+escapeHtml(file.name)+'</span> dosyasındaki projeyi yükler.'
-      +'<div class="warnline">⚠ Bu işlem geri alınamaz.</div>'
+      +'<div class="warnline">↶ İçe aktardıktan sonra gerekirse Geri Al ile önceki çalışmana dönebilirsin.</div>'
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
   checkpoint();
