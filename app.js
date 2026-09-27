@@ -464,6 +464,11 @@ async function fileToAsset(file){
   const isSvg=/svg/.test(file.type)||/\.svg$/i.test(file.name);
   if(isSvg){
     const text=await readAsText(file);
+    // SVG hiçbir şekilde browser renderer'a verilmeden önce güvenlik/offline
+    // politikasından geçer.
+    const svgPolicy=inspectSvgCompatibility(text);
+    if(svgPolicy.externalRefs) throw new Error('SVG harici veya göreli kaynak içeriyor; offline kullanım için desteklenmiyor');
+    if(svgPolicy.activeContent) throw new Error('SVG aktif script içeriği içeriyor');
     const svgDataURL='data:image/svg+xml;base64,'+b64(text);
     const img=await loadImage(svgDataURL).catch(()=>new Image());
     const w=img.naturalWidth||svgDims(text).w||150;
@@ -472,8 +477,6 @@ async function fileToAsset(file){
     // 1. Yalnızca deterministik olarak güvenli görülen SVG'leri doğrudan
     // vektör normalize et. Arc/transform/style/effect/unsupported geometry
     // içerenler görünüm kaybını önlemek için raster fallback'e gider.
-    const svgPolicy=inspectSvgCompatibility(text);
-    if(svgPolicy.externalRefs) throw new Error('SVG harici ağ kaynağı içeriyor; offline kullanım için desteklenmiyor');
     const hasEmbedded=svgPolicy.hasEmbeddedImage;
     if(svgPolicy.safeDirectVector){
       const norm=normalizeSvgForChar(text, w, h);
@@ -521,9 +524,14 @@ async function fileToAsset(file){
   const {pngURL,w,h}=capPng(baseImg,480);
   if(conv.mode==='trace'){
     try{
-      const svgText=await rasterToVectorSvg(pngURL, conv.colors);
-      const d=svgDims(svgText); const preview='data:image/svg+xml;base64,'+b64(svgText);
-      return { isSvg:false, vector:true, svgText, dataURL:preview, w:d.w||w, h:d.h||h, img:await loadImage(preview) };
+      const traced=await rasterToVectorSvg(pngURL,conv.colors);
+      const tracedPolicy=inspectSvgCompatibility(traced);
+      if(!tracedPolicy.safeDirectVector) throw new Error('ImageTracer çıktısı güvenli vektör kriterlerini karşılamıyor');
+      const d=svgDims(traced);
+      const norm=normalizeSvgForChar(traced,d.w||w,d.h||h);
+      if(!norm) throw new Error('ImageTracer çıktısı normalize edilemedi');
+      const preview='data:image/svg+xml;base64,'+b64(norm.text);
+      return {isSvg:false,vector:true,svgText:norm.text,dataURL:preview,w:norm.w,h:norm.h,img:await loadImage(preview)};
     }catch(e){
       showToast('Vektöre çevrilemedi, gömme kullanıldı','err');
     }
@@ -553,12 +561,26 @@ async function fileToBackgroundAsset(file){
   if(isSvg){
     const raw=await readAsText(file);
     const policy=inspectSvgCompatibility(raw);
-    if(policy.externalRefs) throw new Error('SVG harici ağ kaynağı içeriyor; offline kullanım için desteklenmiyor');
-    const normalized=normalizeSvgForBackground(raw)||raw;
-    const dataURL='data:image/svg+xml;base64,'+b64(normalized);
-    const img=await loadImage(dataURL).catch(()=>new Image());
-    return {isSvg:true,vector:!/<image[\s/>]/i.test(normalized),preserveSvg:true,svgText:normalized,
-      dataURL,w:STAGE_W,h:STAGE_H,img};
+    if(policy.externalRefs) throw new Error('SVG harici veya göreli kaynak içeriyor; offline kullanım için desteklenmiyor');
+    if(policy.activeContent) throw new Error('SVG aktif script içeriği içeriyor');
+
+    if(policy.safeDirectVector){
+      const normalized=normalizeSvgForBackground(raw);
+      if(normalized){
+        const dataURL='data:image/svg+xml;base64,'+b64(normalized);
+        return {isSvg:true,vector:true,preserveSvg:true,svgText:normalized,
+          dataURL,w:STAGE_W,h:STAGE_H,img:await loadImage(dataURL)};
+      }
+    }
+
+    // Karakterlerdekiyle aynı politika: karmaşık SVG arkaplanlar da
+    // browser görünümü korunarak raster fallback'e çevrilir.
+    const dims=svgDims(raw);
+    const rawURL='data:image/svg+xml;base64,'+b64(raw);
+    const prev=await svgToPngPreview(rawURL,dims.w,dims.h,480);
+    if(!prev||!prev.pngURL) throw new Error('Arkaplan SVG güvenli biçimde rasterize edilemedi');
+    return {isSvg:true,vector:false,preserveSvg:false,svgText:wrapRasterSvg(prev.pngURL,prev.w,prev.h),
+      dataURL:prev.pngURL,w:prev.w,h:prev.h,img:prev.img};
   }
   const dataURL=await readAsDataURL(file);
   const baseImg=await loadImage(dataURL);
@@ -566,7 +588,10 @@ async function fileToBackgroundAsset(file){
   if(conv.mode==='trace'){
     try{
       const traced=await rasterToVectorSvg(pngURL,conv.colors);
-      const normalized=normalizeSvgForBackground(traced)||traced;
+      const tracedPolicy=inspectSvgCompatibility(traced);
+      if(!tracedPolicy.safeDirectVector) throw new Error('ImageTracer çıktısı güvenli vektör kriterlerini karşılamıyor');
+      const normalized=normalizeSvgForBackground(traced);
+      if(!normalized) throw new Error('ImageTracer arkaplan çıktısı normalize edilemedi');
       const preview='data:image/svg+xml;base64,'+b64(normalized);
       return {isSvg:false,vector:true,preserveSvg:true,svgText:normalized,dataURL:preview,
         w:STAGE_W,h:STAGE_H,img:await loadImage(preview)};
@@ -1213,7 +1238,7 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null, mediaSource=null;
   let animId=null, playAnimId=null;
   let isRecording=false, startTime=0, waveData=[], lastSampleAt=0, discardOnStop=false;
-  let recBlob=null, blobUrl=null;
+  let recBlob=null, blobUrl=null, startRequestId=0;
   let trimStart=0, trimEnd=1;
   let dragHandle=null, dragStartX=0, dragStartPct=0;
   const SAMPLE_MS=50, MAX_MS=60000;
@@ -1373,8 +1398,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
   // Open / close
   function openModal(){
+    startRequestId++;
     if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
     chunks=[];waveData=[];isRecording=false;recBlob=null;lastSampleAt=0;discardOnStop=false;
+    recBtn.disabled=false;
     trimStart=0;trimEnd=1;
     audio.src='';
     recBtn.classList.remove('recording');
@@ -1388,7 +1415,9 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   }
 
   function closeModal(){
+    startRequestId++;
     overlay.classList.remove('show');
+    recBtn.disabled=false;
     if(isRecording) stopRec(false);
     stopPlayback();
     cancelAnimationFrame(animId);
@@ -1404,35 +1433,55 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
   // Recording
   async function startRec(){
-    try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}
-    catch(e){showToast('Mikrofon erisimi reddedildi');return;}
-    actx=ensureAudioContext(actx);
-    if(actx.state==='suspended') await actx.resume();
-    analyser=actx.createAnalyser(); analyser.fftSize=1024;
-    mediaSource=actx.createMediaStreamSource(stream); mediaSource.connect(analyser);
-    chunks=[];waveData=[];lastSampleAt=0;discardOnStop=false;
-    const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
-    mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
-    mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
-    mediaRecorder.onstop=onRecStop;
-    mediaRecorder.start(100);
-    isRecording=true; startTime=Date.now();
-    recBtn.classList.add('recording');
-    const fbuf=new Uint8Array(analyser.frequencyBinCount);
-    function loop(){
-      if(!isRecording) return;
-      const now=Date.now()-startTime;
-      analyser.getByteTimeDomainData(fbuf);
-      if(now-lastSampleAt>=SAMPLE_MS){
-        let pk=0; for(let i=0;i<fbuf.length;i++) pk=Math.max(pk,Math.abs(fbuf[i]-128)/128);
-        waveData.push(pk); lastSampleAt=now;
+    if(isRecording||recBtn.disabled) return;
+    const requestId=++startRequestId;
+    recBtn.disabled=true;
+    let requestedStream=null;
+    try{
+      requestedStream=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(requestId!==startRequestId||!overlay.classList.contains('show')){
+        requestedStream.getTracks().forEach(t=>t.stop());
+        requestedStream=null;
+        return;
       }
-      timer.textContent=fmtTime(now);
-      drawLive();
-      animId=requestAnimationFrame(loop);
+      stream=requestedStream; requestedStream=null;
+      actx=ensureAudioContext(actx);
+      if(actx.state==='suspended') await actx.resume();
+      if(requestId!==startRequestId||!overlay.classList.contains('show')){
+        if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+        return;
+      }
+      analyser=actx.createAnalyser(); analyser.fftSize=1024;
+      mediaSource=actx.createMediaStreamSource(stream); mediaSource.connect(analyser);
+      chunks=[];waveData=[];lastSampleAt=0;discardOnStop=false;
+      const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
+      mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
+      mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
+      mediaRecorder.onstop=onRecStop;
+      mediaRecorder.start(100);
+      isRecording=true; startTime=Date.now();
+      recBtn.classList.add('recording');
+      const fbuf=new Uint8Array(analyser.frequencyBinCount);
+      function loop(){
+        if(!isRecording) return;
+        const now=Date.now()-startTime;
+        analyser.getByteTimeDomainData(fbuf);
+        if(now-lastSampleAt>=SAMPLE_MS){
+          let pk=0; for(let i=0;i<fbuf.length;i++) pk=Math.max(pk,Math.abs(fbuf[i]-128)/128);
+          waveData.push(pk); lastSampleAt=now;
+        }
+        timer.textContent=fmtTime(now);
+        drawLive();
+        animId=requestAnimationFrame(loop);
+      }
+      loop();
+      setTimeout(()=>{if(isRecording&&requestId===startRequestId)stopRec(true);},MAX_MS);
+    }catch(e){
+      if(requestId===startRequestId) showToast('Mikrofon erişimi reddedildi veya kullanılamıyor');
+    }finally{
+      if(requestedStream) requestedStream.getTracks().forEach(t=>t.stop());
+      if(requestId===startRequestId) recBtn.disabled=false;
     }
-    loop();
-    setTimeout(()=>{if(isRecording)stopRec(true);},MAX_MS);
   }
 
   function stopRec(keep){
@@ -1524,9 +1573,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 })();
 
 
-let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null;
+let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null, playbackGeneration=0;
 
 function stopCurrentSound(shouldRender=true){
+  playbackGeneration++;
   if(currentPlayingNode){
     try{currentPlayingNode.stop();}catch(e){}
     try{currentPlayingNode.disconnect();}catch(e){}
@@ -1540,25 +1590,34 @@ function stopCurrentSound(shouldRender=true){
 function togglePlaySound(s){
   if(currentPlayingId===s.id){ stopCurrentSound(); return; }
   stopCurrentSound();
+  const generation=playbackGeneration;
   try{
     audioCtx=ensureAudioContext(audioCtx);
     if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
     audioCtx.decodeAudioData(s.buf.slice(0)).then(b=>{
+      if(generation!==playbackGeneration) return;
       const node=audioCtx.createBufferSource();
       node.buffer=b; node.connect(audioCtx.destination);
-      node.onended=()=>{ if(currentPlayingId===s.id){ currentPlayingNode=null; currentPlayingId=null; _playStartTime=null; cancelAnimationFrame(_playRafId); renderSounds(); } };
+      node.onended=()=>{
+        try{node.disconnect();}catch(e){}
+        if(generation===playbackGeneration&&currentPlayingId===s.id){
+          currentPlayingNode=null; currentPlayingId=null; _playStartTime=null;
+          cancelAnimationFrame(_playRafId); renderSounds();
+        }
+      };
+      if(generation!==playbackGeneration){try{node.disconnect();}catch(e){} return;}
       node.start();
       currentPlayingNode=node; currentPlayingId=s.id; _playStartTime=Date.now();
       renderSounds();
-      // animate progress cursor
       function tickCursor(){
+        if(generation!==playbackGeneration) return;
         const cvs=document.querySelector('.soundlist [data-sid="'+s.id+'"]')?.closest('li')?.querySelector('.snd-wave');
         if(cvs) drawWaveCanvas(s,cvs);
         if(currentPlayingId===s.id) _playRafId=requestAnimationFrame(tickCursor);
       }
       tickCursor();
-    }).catch(()=>showToast('Bu format önizlenemiyor (yine de dışa aktarılır)'));
-  }catch(e){ showToast('Önizleme yapılamadı'); }
+    }).catch(()=>{if(generation===playbackGeneration)showToast('Bu format önizlenemiyor (yine de dışa aktarılır)');});
+  }catch(e){ if(generation===playbackGeneration)showToast('Önizleme yapılamadı'); }
 }
 
 function playSound(s){ togglePlaySound(s); }
@@ -1737,7 +1796,8 @@ function solidColorSvgFill(svgText){
 }
 async function svgTextToAsset(text,opts={}){
   const policy=inspectSvgCompatibility(text);
-  if(policy.externalRefs) throw new Error('Projedeki SVG harici ağ kaynağı içeriyor');
+  if(policy.externalRefs) throw new Error('Projedeki SVG harici veya göreli kaynak içeriyor');
+  if(policy.activeContent) throw new Error('Projedeki SVG aktif script içeriği içeriyor');
   const hasImage=policy.hasEmbeddedImage;
   const {w,h}=svgDims(text);
   const dataURL='data:image/svg+xml;base64,'+b64(text);
@@ -1958,8 +2018,10 @@ function showSvgInfo(libItem){
     ['viewBox',a.vbVal]
   ];
   const checks=[
-    {ok:!a.externalRefs,label:'Harici ağ kaynağı',value:a.externalRefs?'Var':'Yok',
-      errNote:'Offline çalışma ve güvenlik için http(s) kaynakları kabul edilmez.'},
+    {ok:!a.externalRefs,label:'Harici/göreli kaynak',value:a.externalRefs?a.unsafeReferences.join(', '):'Yok',
+      errNote:'Offline çalışma için yalnızca data: ve #fragment referansları kabul edilir.'},
+    {ok:!a.activeContent,label:'Aktif içerik',value:a.activeContent?'script var':'Yok',
+      errNote:'Script içeren SVG dosyaları kabul edilmez.'},
     {ok:a.transformCount===0,label:'Transform',value:a.transformCount?a.transformCount+' adet':'Yok',
       errNote:'Transform içeren yüklemeler görünümü korumak için raster fallback kullanır.'},
     {ok:a.arcPaths===0,label:'Arc komutu A/a',value:a.arcPaths?a.arcPaths+' path':'Yok',
@@ -1968,8 +2030,8 @@ function showSvgInfo(libItem){
       errNote:'rect/ellipse/line/polyline/text/use gibi yapılar doğrudan vektör yoluna alınmaz.'},
     {ok:a.effectCount===0,label:'Clip / mask / gradient / filter',value:effects,
       errNote:'Efektli SVG görünümü korunmak için raster fallback kullanır.'},
-    {ok:a.styleCount===0,label:'style attribute',value:a.styleCount?a.styleCount+' adet':'Yok',
-      errNote:'CSS style içeren SVG otomatik normalizasyonda raster fallback kullanır.'},
+    {ok:(a.styleCount+a.styleElementCount)===0,label:'CSS style',value:(a.styleCount+a.styleElementCount)?(a.styleCount+' attribute, '+a.styleElementCount+' <style>'):'Yok',
+      errNote:'style attribute veya <style> elementi içeren SVG otomatik normalizasyonda raster fallback kullanır.'},
     {ok:!a.rootPresentation,label:'Kök SVG presentation',value:a.rootPresentation?'Var':'Yok',
       errNote:'Kökten miras alınan fill/stroke/opacity gibi stiller raster fallback ile korunur.'},
     {ok:!a.viewBoxOriginNonZero,label:'viewBox başlangıcı',value:a.viewBoxValid?(a.viewBox[0]+' '+a.viewBox[1]):'Belirsiz',
