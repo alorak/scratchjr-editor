@@ -4,6 +4,7 @@ import {assertFileSize,b64,readAsDataURL,readAsText,loadImage,svgDims,wrapRaster
 import {ensureAudioContext,closeAudioContext,waveformPeaks} from './audio-utils.mjs';
 import {createAudioRecorder} from './audio-recorder.mjs';
 import {createSjrTransferController} from './sjr-import-export.mjs';
+import {createStageController} from './stage-controller.mjs';
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
@@ -207,12 +208,6 @@ async function restoreAutosave(){
 function baseName(filename){
   return (filename||'').replace(/\.[^.]+$/,'').replace(/[_\-]+/g,' ').trim().slice(0,24)||'Karakter';
 }
-function drawCover(ctx,img,W,H){
-  const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H;
-  const ratio=Math.max(W/iw,H/ih),dw=iw*ratio,dh=ih*ratio;
-  try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch{}
-}
-
 /* ---------- dosya okuma ---------- */
 /* Inkscape/harici SVG'yi ScratchJr'ın beklediği sade path-tabanlı formata normalleştirir.
    pxW/pxH: tarayıcının mm→px dönüşümünden gelen gerçek piksel boyutları
@@ -607,14 +602,17 @@ function syncConv(){
   });
 }
 
+const stageController=createStageController({
+  document,window,state,newPage,nextId,checkpoint,scheduleAutosave,showToast,confirmModal,showDialog,hideDialog,
+  renderBgTab,renderAll:()=>render(),updateHistoryButtons,
+  stageWidth:STAGE_W,stageHeight:STAGE_H,maxPages:MAX_PAGES
+});
+const {renderPages,renderStage,renderSelPanel,renderTextPanel,renderWorkspace,scheduleRenderPages}=stageController;
+
 /* ---------- render ---------- */
 function render(opts={}){
   renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
   if(opts.autosave!==false) scheduleAutosave();
-}
-function renderWorkspace(opts={}){
-  if(opts.pages!==false) renderPages();
-  renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
 }
 function renderBadges(){
   document.getElementById('badgeChars').textContent=state.charLib.length;
@@ -801,385 +799,6 @@ function drawWaveCanvas(s,cvs){
     ctx.moveTo(px,0); ctx.lineTo(px,44); ctx.stroke();
   }
 }
-const pageThumbCache=new WeakMap(),thumbAssetIds=new WeakMap();
-let thumbAssetSeq=1,renderPagesTimer=null;
-function thumbAssetId(asset){
-  if(!asset||typeof asset!=='object') return 'none';
-  if(!thumbAssetIds.has(asset)) thumbAssetIds.set(asset,'a'+thumbAssetSeq++);
-  return thumbAssetIds.get(asset);
-}
-function pageThumbSignature(page){
-  return JSON.stringify([
-    page.bg?.mode,page.bg?.color,page.bg?.bgId,thumbAssetId(page.bg?.asset),
-    (page.chars||[]).map(c=>[c.id,c.libId,thumbAssetId(c.asset),+Number(c.fx||0).toFixed(4),+Number(c.fy||0).toFixed(4),+Number(c.sizePct||0).toFixed(2),!!c.flip,+Number(c.aspect||1).toFixed(4)]),
-    (page.texts||[]).map(t=>[t.id,t.str,t.color,t.fontsize,+Number(t.fx||0).toFixed(4),+Number(t.fy||0).toFixed(4)])
-  ]);
-}
-function getPageThumb(page,w,h){
-  const signature=pageThumbSignature(page),cached=pageThumbCache.get(page);
-  if(cached&&cached.signature===signature&&cached.w===w&&cached.h===h) return cached.url;
-  const url=renderPageThumbSync(page,w,h);
-  pageThumbCache.set(page,{signature,w,h,url});
-  return url;
-}
-function scheduleRenderPages(delay=80){
-  clearTimeout(renderPagesTimer);
-  renderPagesTimer=setTimeout(()=>{renderPagesTimer=null;renderPages();},delay);
-}
-function renderPageThumbSync(page,w,h){
-  const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
-  const ctx=cv.getContext('2d');
-  if(page.bg.mode==='color'){ ctx.fillStyle=page.bg.color; ctx.fillRect(0,0,w,h); }
-  else if(page.bg.asset&&page.bg.asset.img){ ctx.fillStyle='#fff'; ctx.fillRect(0,0,w,h); try{drawCover(ctx,page.bg.asset.img,w,h);}catch(e){} }
-  else { ctx.fillStyle='#eaf4ff'; ctx.fillRect(0,0,w,h); }
-  for(const c of page.chars){
-    if(!c.asset||!c.asset.img) continue;
-    const sc=w/STAGE_W, dispW=c.sizePct/100*STAGE_W*sc, dispH=dispW*c.aspect, x=c.fx*w, y=c.fy*h;
-    ctx.save(); ctx.translate(x,y); if(c.flip)ctx.scale(-1,1);
-    try{ctx.drawImage(c.asset.img,-dispW/2,-dispH/2,dispW,dispH);}catch(e){}
-    ctx.restore();
-  }
-  for(const t of (page.texts||[])){
-    const fontSize=Math.max(6,Math.round(t.fontsize*w/STAGE_W));
-    ctx.font=`600 ${fontSize}px ui-rounded, system-ui, sans-serif`;
-    ctx.fillStyle=t.color||'#1a1a1a';
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    try{ctx.fillText(t.str||'',t.fx*w,t.fy*h);}catch(e){}
-  }
-  return cv.toDataURL('image/png');
-}
-function renderPages(){
-  if(renderPagesTimer){clearTimeout(renderPagesTimer);renderPagesTimer=null;}
-  const panel=document.getElementById('pagesPanel'); panel.innerHTML='';
-  state.pages.forEach((p,i)=>{
-    const row=document.createElement('div'); row.className='page-row';
-    // Action buttons (left of thumbnail)
-    const acts=document.createElement('div'); acts.className='page-actions';
-    const bgBtn=document.createElement('button'); bgBtn.className='page-act-btn'; bgBtn.title='Arkaplan seç';
-    bgBtn.dataset.pageBg=String(i); bgBtn.textContent='🎨';
-    bgBtn.onclick=ev=>{ ev.stopPropagation(); openBgPick(i); };
-    const charBtn=document.createElement('button'); charBtn.className='page-act-btn char-btn'; charBtn.title='Karakter ekle';
-    charBtn.dataset.pageChar=String(i); charBtn.textContent='+';
-    charBtn.onclick=ev=>{ ev.stopPropagation(); openCharPick(i); };
-    acts.append(bgBtn,charBtn);
-    // Thumbnail
-    const thumb=document.createElement('div'); thumb.className='page-thumb'+(i===state.current?' active':'');
-    const img=document.createElement('img'); img.src=getPageThumb(p,92,69); img.alt='Sayfa '+(i+1);
-    const num=document.createElement('span'); num.className='page-num'; num.textContent=i+1;
-    const del=document.createElement('button'); del.className='page-del'; del.textContent='×'; del.title='Sayfayı sil';
-    if(state.pages.length<=1) del.style.display='none';
-    del.onclick=async ev=>{
-      ev.stopPropagation();
-      if(state.pages.length<=1){ showToast('En az bir sayfa olmalı','err'); return; }
-      const onay=await confirmModal({
-        title:'Sayfayı sil',
-        okText:'Evet, sil',
-        cancelText:'Vazgeç',
-        bodyHtml:'<b>Sayfa '+(i+1)+'</b> silinecek. Bu sayfadaki tüm karakterler kaldırılır.<div class="warnline">↶ Gerekirse Geri Al ile işlemi geri çevirebilirsin.</div>'
-      });
-      if(!onay) return;
-      checkpoint();
-      state.pages.splice(i,1); state.current=Math.max(0,Math.min(state.current,state.pages.length-1)); state.selected=null; state.selectedText=null; render();
-    };
-    thumb.append(img,num,del);
-    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; renderWorkspace(); renderBgTab(); };
-    thumb.onclick=selectPage; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label','Sayfa '+(i+1)+' seç');
-    thumb.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===thumb){e.preventDefault();selectPage();}};
-    row.append(acts,thumb);
-    panel.appendChild(row);
-  });
-  const add=document.createElement('button'); add.className='add-page'; add.textContent='+'; add.title=state.pages.length>=MAX_PAGES?'ScratchJr en fazla 4 sayfa destekler':'Yeni sayfa ekle';
-  add.disabled=state.pages.length>=MAX_PAGES; add.setAttribute('aria-label',add.title);
-  add.onclick=()=>{ if(state.pages.length>=MAX_PAGES){showToast('ScratchJr en fazla 4 sayfa destekler','err');return;} checkpoint(); state.pages.push(newPage()); state.current=state.pages.length-1; state.selected=null; state.selectedText=null; render(); };
-  panel.appendChild(add);
-}
-const stageEl=document.getElementById('stage');
-
-/* ---------- koordinat ızgarası ---------- */
-let _gridVisible=false;
-function initGridLabels(){
-  const rowWrap=document.getElementById('stageRowLabels');
-  const colWrap=document.getElementById('stageColLabels');
-  // rows 1 (bottom) → 15 (top); flex-direction:column-reverse so first child = row 1
-  for(let i=1;i<=15;i++){
-    const el=document.createElement('div');
-    el.className='stage-lbl'; el.dataset.row=i; el.textContent=i;
-    rowWrap.appendChild(el);
-  }
-  // cols 1 (left) → 20 (right)
-  for(let i=1;i<=20;i++){
-    const el=document.createElement('div');
-    el.className='stage-lbl'; el.dataset.col=i; el.textContent=i;
-    colWrap.appendChild(el);
-  }
-}
-function updateGridLabels(){
-  document.querySelectorAll('#stageRowLabels .stage-lbl,#stageColLabels .stage-lbl')
-    .forEach(el=>el.classList.remove('hl'));
-  const sel=getSel();
-  if(!sel) return;
-  const col=Math.max(1,Math.min(20,Math.ceil(sel.fx*20)));
-  const row=Math.max(1,Math.min(15,Math.ceil((1-sel.fy)*15)));
-  const rEl=document.querySelector(`#stageRowLabels [data-row="${row}"]`);
-  const cEl=document.querySelector(`#stageColLabels [data-col="${col}"]`);
-  if(rEl) rEl.classList.add('hl');
-  if(cEl) cEl.classList.add('hl');
-}
-
-document.getElementById('gridToggleBtn').addEventListener('click',()=>{
-  _gridVisible=!_gridVisible;
-  document.getElementById('gridToggleBtn').classList.toggle('active',_gridVisible);
-  const gridEl=stageEl.querySelector('.grid');
-  if(gridEl) gridEl.style.opacity=_gridVisible?'0.5':'0';
-  updateGridLabels();
-});
-
-function renderStage(){
-  const page=state.pages[state.current];
-  [...stageEl.querySelectorAll('.sprite,.bgimg,.empty,.stage-text')].forEach(n=>n.remove());
-  if(page.bg.mode==='color'){ stageEl.style.background=page.bg.color; }
-  else { stageEl.style.background='#fff'; const bi=document.createElement('img'); bi.className='bgimg'; bi.src=page.bg.asset.dataURL; bi.alt=''; stageEl.insertBefore(bi,stageEl.querySelector('.grid')); }
-  if(page.chars.length===0){ const e=document.createElement('div'); e.className='empty'; e.textContent='Karakterler sekmesinden bir karaktere tıklayarak sahneye ekle 🐱'; stageEl.appendChild(e); }
-  const sw=stageEl.clientWidth, sh=stageEl.clientHeight;
-  page.chars.forEach(c=>{
-    const el=document.createElement('div'); el.className='sprite'+(c.id===state.selected?' sel':'')+(c.flip?' flip':''); el.dataset.id=c.id;
-    const dispW=c.sizePct/100*sw, dispH=dispW*c.aspect;
-    el.style.width=dispW+'px'; el.style.height=dispH+'px'; el.style.left=(c.fx*sw-dispW/2)+'px'; el.style.top=(c.fy*sh-dispH/2)+'px';
-    const img=document.createElement('img'); img.src=c.asset.dataURL; img.alt=c.name; el.appendChild(img);
-    stageEl.appendChild(el); attachDrag(el,c);
-  });
-  (page.texts||[]).forEach(t=>{
-    const tel=document.createElement('div');
-    tel.className='stage-text'+(t.id===state.selectedText?' sel':'');
-    tel.dataset.textId=t.id;
-    const scale=sw/STAGE_W;
-    tel.style.fontSize=(t.fontsize*scale)+'px';
-    tel.style.color=t.color;
-    tel.style.left=(t.fx*sw)+'px';
-    tel.style.top=(t.fy*sh)+'px';
-    tel.textContent=t.str||'';
-    stageEl.appendChild(tel);
-    attachTextDrag(tel,t);
-  });
-  const gridEl=stageEl.querySelector('.grid');
-  if(gridEl) gridEl.style.opacity=_gridVisible?'0.5':'0';
-  updateGridLabels();
-}
-function renderSelPanel(){
-  const sb=document.getElementById('selSidebar');
-  const page=state.pages[state.current];
-  const chars=page?page.chars:[];
-  if(!chars.length){ sb.classList.remove('show'); return; }
-  sb.classList.add('show');
-
-  // sol: thumbnail listesi
-  const list=document.getElementById('sidebarCharList');
-  list.innerHTML='';
-  chars.forEach(c=>{
-    const thumb=document.createElement('div');
-    thumb.className='sidebar-char-thumb'+(state.selected===c.id?' sel':'');
-    const img=document.createElement('img');
-    img.src=c.asset.dataURL||''; img.alt=c.name||'';
-    img.style.transform=c.flip?'scaleX(-1)':'none';
-    thumb.appendChild(img);
-    const selectChar=()=>{ state.selected=c.id; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); };
-    thumb.onclick=selectChar; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label',(c.name||'Karakter')+' seç');
-    thumb.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectChar();}};
-    list.appendChild(thumb);
-  });
-
-  // sağ: detay paneli
-  const sel=getSel();
-  const isEmpty=document.getElementById('sidebarDetailEmpty');
-  const controls=['sidebarCharName','flipBtn','delBtn','sidebarSizeLbl','sidebarSizeRow','sizeRange'];
-  if(sel){
-    isEmpty.style.display='none';
-    controls.forEach(id=>document.getElementById(id).style.display='');
-    document.getElementById('sidebarCharName').textContent=sel.name||'Karakter';
-    const v=Math.round(sel.sizePct);
-    document.getElementById('sizePctVal').textContent=v+'%';
-    document.getElementById('sizeRange').value=v;
-  } else {
-    isEmpty.style.display='';
-    controls.forEach(id=>document.getElementById(id).style.display='none');
-  }
-}
-function getSel(){ return state.pages[state.current].chars.find(c=>c.id===state.selected); }
-
-/* ---------- sürükleme ---------- */
-function attachDrag(el,c){
-  el.addEventListener('pointerdown',e=>{
-    e.preventDefault();
-    state.selected=c.id;
-    state.selectedText=null;
-    stageEl.querySelectorAll('.sprite').forEach(s=>s.classList.toggle('sel',s.dataset.id===c.id));
-    stageEl.querySelectorAll('.stage-text').forEach(s=>s.classList.remove('sel'));
-    renderSelPanel();
-    renderTextPanel();
-    const rect=stageEl.getBoundingClientRect();
-    checkpoint();
-    el.setPointerCapture(e.pointerId); el.style.cursor='grabbing';
-    const move=ev=>{
-      c.fx=Math.max(0,Math.min(1,(ev.clientX-rect.left)/rect.width));
-      c.fy=Math.max(0,Math.min(1,(ev.clientY-rect.top)/rect.height));
-      const dispW=c.sizePct/100*rect.width,dispH=dispW*c.aspect;
-      el.style.left=(c.fx*rect.width-dispW/2)+'px';
-      el.style.top=(c.fy*rect.height-dispH/2)+'px';
-      updateGridLabels();
-    };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
-    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
-  });
-}
-
-/* ---------- yazı paneli ---------- */
-const TEXT_COLORS=['#1a1a1a','#e84040','#f08030','#e8c000','#40b840','#2880e0','#8f56e3','#e860a0'];
-
-function getSelText(){ return (state.pages[state.current].texts||[]).find(t=>t.id===state.selectedText); }
-
-function renderTextPanel(){
-  const page=state.pages[state.current];
-  const texts=page.texts=page.texts||[];
-  if(state.selectedText&&!texts.find(t=>t.id===state.selectedText)) state.selectedText=null;
-  const list=document.getElementById('textItemList');
-  list.innerHTML='';
-  if(!texts.length){
-    const e=document.createElement('div'); e.className='text-empty-msg';
-    e.textContent='Henüz yazı yok. + ile ekle.'; list.appendChild(e);
-  } else {
-    texts.forEach(t=>{
-      const item=document.createElement('div');
-      item.className='text-item'+(t.id===state.selectedText?' sel':'');
-      const preview=document.createElement('span');
-      preview.className='text-item-preview'; preview.style.color=t.color;
-      preview.textContent=t.str||'(boş)';
-      item.appendChild(preview);
-      const selectText=()=>{ state.selectedText=t.id; state.selected=null;
-        stageEl.querySelectorAll('.sprite').forEach(s=>s.classList.remove('sel'));
-        stageEl.querySelectorAll('.stage-text').forEach(s=>s.classList.toggle('sel',s.dataset.textId===t.id));
-        renderTextPanel(); renderSelPanel(); };
-      item.onclick=selectText; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',(t.str||'Boş yazı')+' seç');
-      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectText();}};
-      list.appendChild(item);
-    });
-  }
-  const editPanel=document.getElementById('textEditPanel');
-  const sel=getSelText();
-  if(sel){
-    editPanel.style.display='flex';
-    const inp=document.getElementById('textStrInput');
-    if(inp!==document.activeElement) inp.value=sel.str;
-    document.getElementById('textSizeVal').textContent=sel.fontsize;
-    const colorRow=document.getElementById('textColorRow'); colorRow.innerHTML='';
-    const selHex=colorToHex(sel.color);
-    TEXT_COLORS.forEach(c=>{
-      const sw=document.createElement('div');
-      sw.className='text-color-swatch'+(selHex===c?' active':'');
-      sw.style.background=c; sw.title=c;
-      sw.tabIndex=0; sw.setAttribute('role','button'); sw.setAttribute('aria-label','Yazı rengini '+c+' yap');
-      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave();};
-      sw.onclick=setColor; sw.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setColor();}};
-      colorRow.appendChild(sw);
-    });
-    const custom=document.createElement('input');
-    custom.type='color'; custom.className='text-custom-color'; custom.title='Özel renk';
-    custom.value=selHex;
-    custom.onpointerdown=()=>checkpoint();
-    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave(); };
-    colorRow.appendChild(custom);
-  } else {
-    editPanel.style.display='none';
-  }
-}
-
-function attachTextDrag(el,t){
-  el.addEventListener('pointerdown',e=>{
-    e.preventDefault();
-    state.selectedText=t.id; state.selected=null;
-    stageEl.querySelectorAll('.stage-text').forEach(s=>s.classList.toggle('sel',s.dataset.textId===t.id));
-    stageEl.querySelectorAll('.sprite').forEach(s=>s.classList.remove('sel'));
-    renderTextPanel(); renderSelPanel();
-    const rect=stageEl.getBoundingClientRect();
-    checkpoint();
-    el.setPointerCapture(e.pointerId); el.style.cursor='grabbing';
-    const move=ev=>{
-      t.fx=Math.max(0,Math.min(1,(ev.clientX-rect.left)/rect.width));
-      t.fy=Math.max(0,Math.min(1,(ev.clientY-rect.top)/rect.height));
-      el.style.left=(t.fx*rect.width)+'px';
-      el.style.top=(t.fy*rect.height)+'px';
-    };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
-    el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
-  });
-}
-
-document.getElementById('textAddBtn').onclick=()=>{
-  checkpoint();
-  const page=state.pages[state.current];
-  page.texts=page.texts||[];
-  const t={id:nextId(),str:'Yazı',color:TEXT_COLORS[5],fontsize:16,fx:0.5,fy:0.5};
-  page.texts.push(t); state.selectedText=t.id; state.selected=null;
-  renderTextPanel(); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
-};
-
-document.getElementById('textStrInput').addEventListener('focus',()=>checkpoint());
-document.getElementById('textStrInput').addEventListener('input',e=>{
-  const t=getSelText(); if(!t) return;
-  t.str=e.target.value;
-  const tel=stageEl.querySelector(`.stage-text[data-text-id="${t.id}"]`);
-  if(tel) tel.textContent=t.str;
-  const listEl=document.querySelector('#textItemList .text-item.sel .text-item-preview');
-  if(listEl){ listEl.textContent=t.str||'(boş)'; listEl.style.color=t.color; }
-  scheduleRenderPages(); scheduleAutosave();
-});
-
-document.getElementById('textSizeDown').onclick=()=>{
-  const t=getSelText(); if(!t) return; checkpoint();
-  t.fontsize=Math.max(8,t.fontsize-2);
-  document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); scheduleRenderPages(); scheduleAutosave();
-};
-document.getElementById('textSizeUp').onclick=()=>{
-  const t=getSelText(); if(!t) return; checkpoint();
-  t.fontsize=Math.min(96,t.fontsize+2);
-  document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); scheduleRenderPages(); scheduleAutosave();
-};
-
-document.getElementById('textDelBtn').onclick=async()=>{
-  const t=getSelText(); if(!t) return;
-  const onay=await confirmModal({
-    title:'Yazıyı sil',
-    bodyHtml:`<b>"${escapeHtml(t.str||'')}"</b> silinsin mi?`,
-    okText:'Evet, sil', cancelText:'Vazgeç'
-  });
-  if(!onay) return;
-  checkpoint();
-  const page=state.pages[state.current];
-  page.texts=page.texts.filter(z=>z!==t);
-  state.selectedText=null; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();
-};
-
-/* ---------- kontroller ---------- */
-function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); scheduleRenderPages(); scheduleAutosave(); }
-document.getElementById('sizeDown').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct-5);} };
-document.getElementById('sizeUp').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct+5);} };
-document.getElementById('sizeRange').addEventListener('pointerdown',()=>{if(getSel())checkpoint();});
-document.getElementById('sizeRange').addEventListener('input',e=>changeSizePct(+e.target.value));
-document.getElementById('flipBtn').onclick=()=>{ const c=getSel(); if(!c)return showToast('Önce bir karakter seç'); checkpoint(); c.flip=!c.flip; renderStage(); renderSelPanel(); renderPages(); scheduleAutosave(); };
-document.getElementById('delBtn').onclick=async()=>{
-  const c=getSel(); if(!c)return showToast('Önce bir karakter seç');
-  const onay=await confirmModal({
-    title:'Karakteri sil',
-    bodyHtml:`<b>${escapeHtml(c.name||'Karakter')}</b> bu sayfadan kaldırılsın mı?`,
-    okText:'Evet, sil', cancelText:'Vazgeç'
-  });
-  if(!onay) return;
-  checkpoint();
-  const p=state.pages[state.current]; p.chars=p.chars.filter(z=>z!==c);
-  state.selected=null; renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
-};
-
 /* ---------- yüklemeler ---------- */
 document.getElementById('charUpload').onclick=()=>document.getElementById('charFile').click();
 document.getElementById('charFile').addEventListener('change',async e=>{
@@ -1451,97 +1070,6 @@ document.getElementById('infoClose').onclick=closeInfoDialog;
 document.getElementById('infoCloseBtn').onclick=closeInfoDialog;
 document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))closeInfoDialog();});
 
-/* ---------- arkaplan picker ---------- */
-let bgPickTarget=null;
-function openBgPick(pageIdx){
-  bgPickTarget=pageIdx;
-  document.getElementById('bgPickTitle').textContent='Arkaplan Seç — Sayfa '+(pageIdx+1);
-  const grid=document.getElementById('bgPickGrid'); grid.innerHTML='';
-  const empty=document.getElementById('bgPickEmpty');
-  const curPg=state.pages[pageIdx];
-  document.getElementById('bgPickColor').value=curPg.bg.mode==='color'?curPg.bg.color:'#eaf4ff';
-  if(!state.bgLib.length){ empty.style.display='block'; grid.style.display='none'; }
-  else {
-    empty.style.display='none'; grid.style.display='';
-    state.bgLib.forEach(it=>{
-      const item=document.createElement('div'); item.className='pick-item bgitem';
-      if(curPg.bg.bgId===it.id) item.style.borderColor='var(--blue)';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
-      const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
-      item.append(img,nm);
-      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); scheduleAutosave(); };
-      item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' arkaplanını seç');
-      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
-      grid.appendChild(item);
-    });
-  }
-  const overlay=document.getElementById('bgPickOverlay');
-  showDialog(overlay,document.getElementById('bgPickClose'),closeBgPick);
-}
-function closeBgPick(){
-  const target=bgPickTarget;
-  hideDialog(document.getElementById('bgPickOverlay'));
-  bgPickTarget=null;
-  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-bg="'+target+'"]')?.focus());
-}
-function applyBgToPage(pageIdx,libItem){
-  state.pages[pageIdx].bg={mode:'image',asset:libItem.asset,color:'#fff',bgId:libItem.id};
-  if(pageIdx===state.current) renderStage();
-  renderPages(); renderBgTab();
-}
-document.getElementById('bgPickClose').onclick=closeBgPick;
-document.getElementById('bgPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('bgPickOverlay')) closeBgPick(); });
-document.getElementById('bgPickColor').addEventListener('pointerdown',()=>{if(bgPickTarget!==null)checkpoint();});
-document.getElementById('bgPickColor').addEventListener('input',e=>{
-  if(bgPickTarget===null) return;
-  state.pages[bgPickTarget].bg={mode:'color',color:e.target.value,asset:null,bgId:null};
-  if(bgPickTarget===state.current) renderStage();
-  scheduleRenderPages(); renderBgTab(); scheduleAutosave();
-});
-
-/* ---------- karakter picker ---------- */
-let charPickTarget=null;
-function openCharPick(pageIdx){
-  charPickTarget=pageIdx;
-  document.getElementById('charPickTitle').textContent='Karakter Ekle — Sayfa '+(pageIdx+1);
-  const grid=document.getElementById('charPickGrid'); grid.innerHTML='';
-  const empty=document.getElementById('charPickEmpty');
-  if(!state.charLib.length){ empty.style.display='block'; grid.style.display='none'; }
-  else {
-    empty.style.display='none'; grid.style.display='';
-    state.charLib.forEach(it=>{
-      const item=document.createElement('div'); item.className='pick-item';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
-      const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
-      item.append(img,nm);
-      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); scheduleAutosave(); };
-      item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' karakterini ekle');
-      item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
-      grid.appendChild(item);
-    });
-  }
-  const overlay=document.getElementById('charPickOverlay');
-  showDialog(overlay,document.getElementById('charPickClose'),closeCharPick);
-}
-function closeCharPick(){
-  const target=charPickTarget;
-  hideDialog(document.getElementById('charPickOverlay'));
-  charPickTarget=null;
-  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-char="'+target+'"]')?.focus());
-}
-function addCharToPage(pageIdx,libItem){
-  const a=libItem.asset; const aspect=a.h/a.w;
-  state.pages[pageIdx].chars.push({id:nextId(),libId:libItem.id,name:libItem.name,asset:a,fx:0.5,fy:0.5,sizePct:27,flip:false,aspect});
-  if(pageIdx===state.current){
-    state.selected=state.pages[pageIdx].chars[state.pages[pageIdx].chars.length-1].id;
-    renderStage(); renderSelPanel();
-  }
-  renderPages();
-  showToast(libItem.name+' Sayfa '+(pageIdx+1)+'\'e eklendi');
-}
-document.getElementById('charPickClose').onclick=closeCharPick;
-document.getElementById('charPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('charPickOverlay')) closeCharPick(); });
-
 /* ---------- toast ---------- */
 let toastTimer=null;
 function showToast(msg,kind){ const t=document.getElementById('toast'); t.textContent=msg; t.className='toast show'+(kind==='err'?' err':'');
@@ -1549,10 +1077,8 @@ function showToast(msg,kind){ const t=document.getElementById('toast'); t.textCo
 
 /* ---------- başlat ---------- */
 document.getElementById('pname').addEventListener('input',scheduleAutosave);
-window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); scheduleRenderPages(60); } });
-stageEl.addEventListener('pointerdown',e=>{ if(e.target===stageEl||e.target.classList.contains('grid')||e.target.classList.contains('bgimg')){ state.selected=null; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); }});
 async function boot(){
-  initGridLabels(); syncConv();
+  stageController.bind(); syncConv();
   const restored=await restoreAutosave();
   render({autosave:false});
   setAutosaveStatus('saved',restored?'Otomatik kayıt yüklendi':'Hazır');
