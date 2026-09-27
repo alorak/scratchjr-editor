@@ -15,6 +15,7 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - IndexedDB tabanlı otomatik kayıt; kayıt hataları kullanıcıya bildirilir
 - Klavye ve dokunmatik kullanım iyileştirmeleri
 - Görsel, ses ve .sjr importlarında boyut/arşiv güvenlik sınırları
+- İçe aktarma doğrulaması: bozuk metadata, eksik/belirsiz asset ve duplicate basename raporu
 - AudioContext / kayıt Blob URL yaşam döngüsü temizliği
 - GitHub Pages için offline service worker cache'i
 
@@ -24,7 +25,8 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - `app.css`: tüm stiller
 - `app.js`: UI, sahne, ses, import/export ve autosave akışları
 - `roundtrip-utils.mjs`: test edilebilir ScratchJr round-trip yardımcıları
-- `tests/`: metadata, ses/layer ve kritik kaynak regresyon testleri
+- `tests/`: metadata, import doğrulama, güvenlik, offline, ses/layer ve kritik kaynak regresyon testleri
+- `.github/workflows/ci.yml`: minimal syntax + Node test CI
 
 ## Çalıştırma
 
@@ -39,10 +41,13 @@ GitHub Pages'te çevrimdışı yeniden açma için sayfayı en az bir kez çevri
 Node.js ile ek bağımlılık kurmadan:
 
 ```bash
+npm run check
 npm test
+# veya ikisini birlikte:
+npm run ci
 ```
 
-Testler; fixture tabanlı script/metadata koruması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, imported raster/vector arkaplan seçimi, SVG arc/karmaşık yapı fallback politikası, offline runtime bağımlılıkları, service worker cache listesi, audio lifecycle ve kritik kaynak regresyonlarını kontrol eder.
+Testler; fixture tabanlı script/metadata koruması, import path traversal/duplicate basename kontrolleri, bozuk ScratchJr metadata doğrulaması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, SVG fallback politikası, CSP/offline runtime, service worker, audio lifecycle ve kritik kaynak regresyonlarını kontrol eder.
 
 ## ScratchJr uyumluluğu
 
