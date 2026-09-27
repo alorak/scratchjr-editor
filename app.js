@@ -1,4 +1,4 @@
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
@@ -1558,10 +1558,7 @@ async function exportSRJ(pagesArg){
     function charFile(asset){ if(charCache.has(asset.svgText))return charCache.get(asset.svgText);
       const fn=md5str(asset.svgText)+'.svg'; charsDir.file(fn,asset.svgText); charCache.set(asset.svgText,fn); return fn; }
     function coverSvg(asset){ return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><image width="${STAGE_W}" height="${STAGE_H}" preserveAspectRatio="xMidYMid slice" href="${asset.dataURL}" xlink:href="${asset.dataURL}"/></svg>`; }
-    function backgroundSvg(asset){
-      if(asset&&asset.preserveSvg&&asset.svgText) return asset.svgText;
-      return asset&&asset.vector&&asset.svgText ? asset.svgText : coverSvg(asset);
-    }
+    function backgroundSvg(asset){ return selectBackgroundSvg(asset,coverSvg); }
     function colorSvg(color){ return `<svg xmlns="http://www.w3.org/2000/svg" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><rect width="${STAGE_W}" height="${STAGE_H}" fill="${color}"/></svg>`; }
 
     const jsonObj=state.sjrJsonMeta ? cloneJson(state.sjrJsonMeta) : {};
