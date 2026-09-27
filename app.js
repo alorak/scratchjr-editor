@@ -1,8 +1,8 @@
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
 }
-
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
