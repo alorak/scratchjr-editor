@@ -29,6 +29,7 @@ export function createSjrTransferController(options={}){
     maxEntryBytes:options.maxZipEntryBytes||30*1024*1024,
     maxTotalBytes:options.maxZipTotalBytes||100*1024*1024
   };
+  const zipOutputType=options.zipOutputType||'blob';
 
   let transferBusy=false;
 
@@ -219,7 +220,7 @@ export function createSjrTransferController(options={}){
       data.name=name;data.mtime=String(Date.now());data.thumbnail={pagecount:pages.length,md5:firstThumb};data.json=jsonObj;
       root.file('data.json',JSON.stringify(data));
       op.update(90,'Arşiv sıkıştırılıyor…');
-      const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'},meta=>{
+      const blob=await zip.generateAsync({type:zipOutputType,compression:'DEFLATE'},meta=>{
         const pct=90+Math.round(Math.max(0,Math.min(100,meta.percent||0))*.08);
         op.update(pct,'Arşiv sıkıştırılıyor…');
       });
