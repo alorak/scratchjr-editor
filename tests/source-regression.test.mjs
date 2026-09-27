@@ -289,3 +289,17 @@ test('mobile tablet layout exposes horizontal pages and coarse touch targets',as
   assert.match(css,/@media \(pointer:coarse\)/);
   assert.match(css,/\.page-del\{width:30px;height:30px/);
 });
+
+
+test('transfer operations are mutually exclusive and progress announcements stay quiet',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(app,/let transferBusy=false/);
+  assert.match(app,/function setTransferBusy\(busy\)/);
+  assert.match(app,/if\(transferBusy\) return showToast\('Başka bir içe\/dışa aktarma işlemi sürüyor'\)/);
+  assert.match(app,/setTransferBusy\(true\)/);
+  assert.match(app,/setTransferBusy\(false\)/);
+  assert.doesNotMatch(index,/id="operationProgress" role="status"/);
+  assert.match(index,/id="operationProgressLabel" role="status" aria-live="polite"/);
+  assert.match(app,/if\(label\.textContent!==nextText\) label\.textContent=nextText/);
+  assert.match(app,/op\.update\(pct,'Arşiv sıkıştırılıyor…'\)/);
+});
