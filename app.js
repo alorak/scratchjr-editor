@@ -1,9 +1,9 @@
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,normalizeArchivePath,validateScratchJrProject,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility} from './roundtrip-utils.mjs';
 import {createDialogManager,startOperation} from './ui-utils.mjs';
-import {assertFileSize,b64,readAsDataURL,readAsText,loadImage,svgDims,wrapRasterSvg,escapeHtml,colorToHex} from './file-utils.mjs';
+import {assertFileSize,b64,readAsDataURL,readAsText,loadImage,svgDims,wrapRasterSvg,escapeHtml} from './file-utils.mjs';
 import {ensureAudioContext,closeAudioContext,waveformPeaks} from './audio-utils.mjs';
 import {createAudioRecorder} from './audio-recorder.mjs';
-import {assertZipSafety,readJsonEntry,buildZipIndex,createImportReport,addImportIssue,resolveZipFile,safeManifestArray,safeDisplayName} from './sjr-archive-utils.mjs';
+import {createSjrTransferController} from './sjr-import-export.mjs';
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
@@ -11,8 +11,7 @@ if('serviceWorker' in navigator){
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
-const MB=1024*1024, MAX_IMAGE_BYTES=10*MB, MAX_SOUND_BYTES=20*MB, MAX_SJR_BYTES=25*MB;
-const MAX_ZIP_ENTRIES=500, MAX_ZIP_UNCOMPRESSED=100*MB, MAX_ZIP_ENTRY=30*MB;
+const MB=1024*1024, MAX_IMAGE_BYTES=10*MB, MAX_SOUND_BYTES=20*MB;
 // ScratchJr varsayılan scale=0.5'te karakter sahnenin ~%27'sini kaplasın:
 // CHAR_CANONICAL_W * 0.5 = STAGE_W * 0.27  →  259 px
 const CHAR_CANONICAL_W = Math.round(STAGE_W * 27 / 50);
@@ -203,6 +202,15 @@ async function restoreAutosave(){
   uid=Math.max(uid,ids.length?Math.max(...ids)+1:uid);
   document.getElementById('pname').value=saved.projectName||'Benim Projem';
   return true;
+}
+
+function baseName(filename){
+  return (filename||'').replace(/\.[^.]+$/,'').replace(/[_\-]+/g,' ').trim().slice(0,24)||'Karakter';
+}
+function drawCover(ctx,img,W,H){
+  const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H;
+  const ratio=Math.max(W/iw,H/ih),dw=iw*ratio,dh=ih*ratio;
+  try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch{}
 }
 
 /* ---------- dosya okuma ---------- */
@@ -1268,390 +1276,18 @@ function disposeAudioResources(){
 }
 window.addEventListener('pagehide',disposeAudioResources);
 
-/* ---------- dışa aktarma ---------- */
-const md5str=s=>SparkMD5.hash(s); const md5buf=b=>SparkMD5.ArrayBuffer.hash(b);
-function baseName(fn){ return (fn||'').replace(/\.[^.]+$/,'').replace(/[_\-]+/g,' ').trim().slice(0,24)||'Karakter'; }
-function pad(n){return n<10?'0'+n:''+n;}
-function nowCtime(){const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;}
-async function renderThumb(page){
-  const cv=document.createElement('canvas'); cv.width=STAGE_W; cv.height=STAGE_H; const ctx=cv.getContext('2d');
-  if(page.bg.mode==='color'){ ctx.fillStyle=page.bg.color; ctx.fillRect(0,0,STAGE_W,STAGE_H); }
-  else { ctx.fillStyle='#fff'; ctx.fillRect(0,0,STAGE_W,STAGE_H); drawCover(ctx,page.bg.asset.img,STAGE_W,STAGE_H); }
-  for(const c of page.chars){ const dispW=c.sizePct/100*STAGE_W,dispH=dispW*c.aspect,x=c.fx*STAGE_W,y=c.fy*STAGE_H;
-    ctx.save(); ctx.translate(x,y); if(c.flip)ctx.scale(-1,1); try{ctx.drawImage(c.asset.img,-dispW/2,-dispH/2,dispW,dispH);}catch(e){} ctx.restore(); }
-  for(const t of (page.texts||[])){
-    ctx.font=`600 ${t.fontsize||16}px ui-rounded, system-ui, sans-serif`;
-    ctx.fillStyle=t.color||'#1a1a1a';
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    try{ctx.fillText(t.str||'',t.fx*STAGE_W,t.fy*STAGE_H);}catch(e){}
-  }
-  return await new Promise((res,rej)=>cv.toBlob(blob=>{
-    if(!blob) return rej(new Error('Thumbnail PNG oluşturulamadı'));
-    blob.arrayBuffer().then(res,rej);
-  },'image/png'));
-}
-function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H,r=Math.max(W/iw,H/ih),dw=iw*r,dh=ih*r;
-  try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch(e){} }
+/* ---------- .sjr içe / dışa aktarma ---------- */
+const sjrTransfer=createSjrTransferController({
+  document,window,state,newPage,nextId,checkpoint,render,setTab,showToast,startOperation,showImportReport,
+  stageWidth:STAGE_W,stageHeight:STAGE_H,maxPages:MAX_PAGES
+});
 
-let transferBusy=false;
-function setTransferBusy(busy){
-  transferBusy=!!busy;
-  document.getElementById('importBtn').disabled=transferBusy;
-  document.getElementById('exportBtn').disabled=transferBusy;
-}
-
-async function exportSRJ(pagesArg){
-  if(transferBusy) return showToast('Başka bir içe/dışa aktarma işlemi sürüyor');
-  if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
-  const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
-  const btn=document.getElementById('exportBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Hazırlanıyor…';
-  const op=startOperation('Dışa aktarılıyor');
-  op.update(5,'Proje yapısı hazırlanıyor…');
-  try{
-    const name=(document.getElementById('pname').value||'Benim Projem').trim();
-    const zip=new JSZip(); const root=zip.folder('project');
-    const charsDir=root.folder('characters'), bgDir=root.folder('backgrounds'), thumbDir=root.folder('thumbnails');
-    let soundsDir=null; const soundFiles=[]; const soundOutBySource=new Map(); const usedSoundNames=new Set();
-    if(state.sounds.length){ soundsDir=root.folder('sounds');
-      for(const s of state.sounds){
-        let fn=s.sourceFile ? String(s.sourceFile).replace(/^.*[\\/]/,'') : '';
-        if(!fn || usedSoundNames.has(fn)) fn='SND'+md5buf(s.buf)+'.'+s.ext;
-        usedSoundNames.add(fn); soundsDir.file(fn,s.buf); soundFiles.push(fn);
-        if(s.sourceFile){
-          soundOutBySource.set(String(s.sourceFile),fn);
-          soundOutBySource.set(String(s.sourceFile).replace(/^.*[\\/]/,''),fn);
-        }
-      }
-    }
-    op.update(20,state.sounds.length?'Sesler arşive eklendi':'Ses bulunmuyor');
-    const mapSoundRef=ref=>{
-      const raw=String(ref||''), base=raw.replace(/^.*[\\/]/,'');
-      return soundOutBySource.get(raw)||soundOutBySource.get(base)||raw;
-    };
-    const newSoundFiles=state.sounds.map((s,i)=>s.sourceFile?null:soundFiles[i]).filter(Boolean);
-    const charCache=new Map();
-    function charFile(asset){ if(charCache.has(asset.svgText))return charCache.get(asset.svgText);
-      const fn=md5str(asset.svgText)+'.svg'; charsDir.file(fn,asset.svgText); charCache.set(asset.svgText,fn); return fn; }
-    function coverSvg(asset){ return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><image width="${STAGE_W}" height="${STAGE_H}" preserveAspectRatio="xMidYMid slice" href="${asset.dataURL}" xlink:href="${asset.dataURL}"/></svg>`; }
-    function backgroundSvg(asset){ return selectBackgroundSvg(asset,coverSvg); }
-    function colorSvg(color){ return `<svg xmlns="http://www.w3.org/2000/svg" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><rect width="${STAGE_W}" height="${STAGE_H}" fill="${color}"/></svg>`; }
-
-    const jsonObj=state.sjrJsonMeta ? cloneJson(state.sjrJsonMeta) : {};
-    jsonObj.pages=[]; jsonObj.currentPage='page '+Math.min(pages.length,Math.max(1,state.current+1));
-    let firstThumb=null;
-    for(let i=0;i<pages.length;i++){
-      const page=pages[i], key='page '+(i+1); jsonObj.pages.push(key);
-      let bgName;
-      if(page.bg.mode==='image'&&page.bg.asset){ const svg=backgroundSvg(page.bg.asset); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
-      else { const svg=colorSvg(page.bg.color||'#ffffff'); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
-      const pageObj=page.sjrMeta ? cloneJson(page.sjrMeta) : {textstartat:36};
-      pageObj.sprites=[]; pageObj.md5=bgName; pageObj.num=i+1; pageObj.lastSprite='';
-      const emittedIds=[], usedIds=new Set();
-      const uniqueSpriteId=(preferred,fallback)=>{
-        let id=(preferred||fallback||'Sprite').trim()||'Sprite', n=2, base=id;
-        while(usedIds.has(id)) id=base+' '+(n++);
-        usedIds.add(id); return id;
-      };
-      page.chars.forEach((c,idx)=>{
-        const spId=uniqueSpriteId(c.sjrId,(c.name||'Karakter')+' '+(idx+1)), md5name=charFile(c.asset);
-        const w=Math.round(c.asset.w),h=Math.round(c.asset.h),dispW=c.sizePct/100*STAGE_W,scale=+(dispW/w).toFixed(4);
-        const xcoor=Math.round(c.fx*STAGE_W),ycoor=Math.round(c.fy*STAGE_H);
-        pageObj.sprites.push(spId); emittedIds.push(spId); pageObj.lastSprite=spId;
-        const originalMeta=c.sjrMeta ? cloneJson(c.sjrMeta) : {};
-        const sp=mergeSpriteMeta(originalMeta,{shown:originalMeta.shown!==false,type:'sprite',md5:md5name,id:spId,flip:!!c.flip,name:c.name||'Karakter',
-          angle:typeof originalMeta.angle==='number'?originalMeta.angle:0,scale,speed:typeof originalMeta.speed==='number'?originalMeta.speed:2,
-          defaultScale:scale,xcoor,ycoor,cx:Math.round(w/2),cy:Math.round(h/2),w,h,
-          homex:xcoor,homey:ycoor,homescale:scale,homeshown:originalMeta.homeshown!==false,homeflip:!!c.flip});
-        sp.sounds=mergePreservedSounds(sp.sounds,mapSoundRef,newSoundFiles,soundFiles);
-        pageObj[spId]=sp;
-      });
-      (page.texts||[]).forEach((t,ti)=>{
-        const spId=uniqueSpriteId(t.sjrId,'Text '+(ti+1));
-        const xcoor=Math.round(t.fx*STAGE_W), ycoor=Math.round(t.fy*STAGE_H);
-        const wt=Math.max(1,Math.round((t.str||'').length*(t.fontsize||16)*0.594));
-        const ht=Math.round((t.fontsize||16)*1.125);
-        pageObj.sprites.push(spId); emittedIds.push(spId); pageObj.lastSprite=spId;
-        const sp=t.sjrMeta ? cloneJson(t.sjrMeta) : {};
-        Object.assign(sp,{shown:sp.shown!==false,type:'text',id:spId,
-          speed:typeof sp.speed==='number'?sp.speed:2,
-          cx:Math.round(wt/2),cy:Math.round(ht/2),w:wt,h:ht,
-          xcoor,ycoor,homex:xcoor,homey:ycoor,
-          str:t.str||'',color:t.color||'#1a1a1a',fontsize:t.fontsize||16});
-        pageObj[spId]=sp;
-      });
-      const oldLayers=page.sjrMeta&&Array.isArray(page.sjrMeta.layers)?page.sjrMeta.layers:[];
-      pageObj.layers=mergeLayerOrder(oldLayers,emittedIds);
-      jsonObj[key]=pageObj;
-      const tb=await renderThumb(page); const tn=i+'_'+md5buf(tb)+'.png'; thumbDir.file(tn,tb); if(i===0)firstThumb=tn;
-      op.update(25+Math.round(50*(i+1)/Math.max(1,pages.length)),'Sayfa '+(i+1)+' / '+pages.length+' hazırlandı');
-    }
-    // Karakter kütüphanesindeki kullanılmayan öğeleri de editör round-trip'i için koru.
-    const charManifest=[];
-    for(const it of state.charLib){
-      if(!it.asset) continue;
-      const fn=charFile(it.asset);
-      charManifest.push({file:fn,displayName:it.name||'Karakter'});
-    }
-    // bgLib'deki tüm arkaplanları ZIP'e ekle (sayfalara atanmamış olanlar dahil)
-    const bgManifest=[];
-    for(const it of state.bgLib){
-      if(!it.asset) continue;
-      const svg=backgroundSvg(it.asset);
-      const fn=md5str(svg)+'.svg';
-      bgDir.file(fn,svg); // sayfa döngüsünde eklenmişse üzerine yazmak sorun değil
-      bgManifest.push({file:fn, name:it.name||'Arkaplan'});
-    }
-    // srjlib.json — import sırasında tüm bgLib'i geri yüklemek için
-    const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
-    root.file('srjlib.json', JSON.stringify({characters:charManifest, backgrounds:bgManifest, sounds:sndManifest}));
-    op.update(82,'Kütüphane manifesti hazırlanıyor…');
-
-    const data=state.sjrDataMeta ? cloneJson(state.sjrDataMeta) : {};
-    if(!data.id) data.id=String(Math.floor(Date.now()/1000));
-    if(!data.ctime) data.ctime=new Date().toISOString();
-    if(!data.version) data.version='Webv01';
-    if(data.isgift==null) data.isgift='0';
-    if(data.deleted==null) data.deleted='NO';
-    data.name=name; data.mtime=String(Date.now());
-    data.thumbnail={pagecount:pages.length,md5:firstThumb}; data.json=jsonObj;
-    root.file('data.json', JSON.stringify(data));
-    op.update(90,'Arşiv sıkıştırılıyor…');
-    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'},meta=>{
-      const pct=90+Math.round(Math.max(0,Math.min(100,meta.percent||0))*0.08);
-      op.update(pct,'Arşiv sıkıştırılıyor…');
-    });
-    op.update(98,'İndirme hazırlanıyor…');
-    const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
-    const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=safe+'.sjr';
-    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
-    op.update(100,'Tamamlandı');
-    showToast('✓ '+safe+'.sjr indirildi');
-  }catch(err){ console.error(err); showToast('Dışa aktarma sırasında hata oluştu','err'); }
-  finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
-}
-document.getElementById('exportBtn').onclick=()=>exportSRJ();
-
-/* ---------- içe aktarma (.sjr) ---------- */
-function svgImageHref(svgText){
-  try{ const im=new DOMParser().parseFromString(svgText,'image/svg+xml').querySelector('image');
-    if(!im) return null;
-    return im.getAttribute('href')||im.getAttribute('xlink:href')||im.getAttributeNS('http://www.w3.org/1999/xlink','href')||null;
-  }catch(e){ return null; }
-}
-function svgRectFill(svgText){
-  try{ const r=new DOMParser().parseFromString(svgText,'image/svg+xml').querySelector('rect');
-    return r?(r.getAttribute('fill')||null):null;
-  }catch(e){ return null; }
-}
-function solidColorSvgFill(svgText){
-  try{
-    const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
-    if(doc.querySelector('parsererror')) return null;
-    const svg=doc.documentElement;
-    const kids=[...svg.children].filter(el=>!['defs','metadata','title','desc'].includes(el.tagName.toLowerCase()));
-    if(kids.length!==1 || kids[0].tagName.toLowerCase()!=='rect') return null;
-    return kids[0].getAttribute('fill')||null;
-  }catch(e){ return null; }
-}
-async function svgTextToAsset(text,opts={}){
-  const policy=inspectSvgCompatibility(text);
-  if(policy.externalRefs) throw new Error('Projedeki SVG harici veya göreli kaynak içeriyor');
-  if(policy.activeContent) throw new Error('Projedeki SVG aktif script içeriği içeriyor');
-  const hasImage=policy.hasEmbeddedImage;
-  const {w,h}=svgDims(text);
-  const dataURL='data:image/svg+xml;base64,'+b64(text);
-  let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
-  return { isSvg:true, vector:!hasImage, preserveSvg:!!opts.preserveSvg, svgText:text, dataURL, w:w||150, h:h||150, img };
-}
-async function importSRJ(file,progress=()=>{}){
-  if(typeof JSZip==='undefined') throw new Error('Sıkıştırma kütüphanesi yüklenemedi');
-  assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
-  progress(5,'Arşiv açılıyor…');
-  const zip=await JSZip.loadAsync(file);
-  assertZipSafety(zip,{maxEntries:MAX_ZIP_ENTRIES,maxEntryBytes:MAX_ZIP_ENTRY,maxTotalBytes:MAX_ZIP_UNCOMPRESSED});
-  progress(14,'Arşiv doğrulandı');
-  const report=createImportReport(), zipIndex=buildZipIndex(zip);
-
-  const dataEntries=zipIndex.files.filter(x=>/(^|\/)data\.json$/i.test(x.path));
-  let dataEntry=null;
-  const canonical=dataEntries.find(x=>x.path.toLowerCase()==='project/data.json');
-  if(canonical) dataEntry=canonical;
-  else if(dataEntries.length===1) dataEntry=dataEntries[0];
-  else if(dataEntries.length>1) throw new Error('Arşivde birden fazla data.json bulundu; proje kökü belirsiz');
-  if(!dataEntry) throw new Error('Geçerli bir .sjr değil: data.json bulunamadı');
-
-  const dataFile=dataEntry.file;
-  const prefix=dataEntry.path.replace(/data\.json$/i,'');
-  const data=await readJsonEntry(dataFile,'data.json');
-  const validation=validateScratchJrProject(data,MAX_PAGES);
-  if(validation.errors.length) throw new Error(validation.errors.join(' · '));
-  validation.warnings.forEach(msg=>addImportIssue(report,'warning',msg));
-  const wrappedData=validation.wrapped, J=validation.json, pageKeys=validation.pageKeys;
-  progress(24,'Proje metadata’sı doğrulandı');
-
-  const ns={pages:[],current:resolveCurrentPageIndex(J.currentPage,pageKeys),charLib:[],bgLib:[],sounds:[],selected:null,selectedText:null,
-    sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{},sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys)};
-  const charLibByFile=new Map(),bgLibByFile=new Map();
-
-  async function getCharLib(md5file,context='Karakter'){
-    const safeRef=normalizeArchivePath(md5file);
-    if(!safeRef){addImportIssue(report,'warning',context+': geçersiz karakter dosya yolu');return null;}
-    if(charLibByFile.has(safeRef)) return charLibByFile.get(safeRef);
-    const assetFile=resolveZipFile(zipIndex,[prefix+'characters/'+safeRef,'characters/'+safeRef],report,context+' / '+safeRef);
-    if(!assetFile){addImportIssue(report,'missing',context+': '+safeRef+' karakter dosyası bulunamadı');return null;}
-    try{
-      const asset=await svgTextToAsset(await assetFile.async('string'));
-      const it={id:nextId(),name:'Karakter',asset};
-      ns.charLib.push(it); charLibByFile.set(safeRef,it); report.characters++; return it;
-    }catch(err){
-      addImportIssue(report,'skipped',context+': '+safeRef+' okunamadı ('+(err.message||'SVG hatası')+')'); return null;
-    }
-  }
-  async function getBgLib(md5file,bgText,context='Arkaplan'){
-    const safeRef=normalizeArchivePath(md5file);
-    if(!safeRef){addImportIssue(report,'warning',context+': geçersiz arkaplan dosya yolu');return null;}
-    if(bgLibByFile.has(safeRef)) return bgLibByFile.get(safeRef);
-    try{
-      const asset=await svgTextToAsset(bgText,{preserveSvg:true});
-      const it={id:nextId(),name:'Arkaplan',asset};
-      ns.bgLib.push(it); bgLibByFile.set(safeRef,it); report.backgrounds++; return it;
-    }catch(err){
-      addImportIssue(report,'skipped',context+': '+safeRef+' okunamadı ('+(err.message||'SVG hatası')+')'); return null;
-    }
-  }
-
-  let libManifest=null;
-  const libFile=resolveZipFile(zipIndex,[prefix+'srjlib.json','srjlib.json'],report,'srjlib.json');
-  if(libFile){
-    try{libManifest=await readJsonEntry(libFile,'srjlib.json');}
-    catch(err){addImportIssue(report,'warning',err.message);libManifest=null;}
-  }
-  if(libManifest&&typeof libManifest==='object'){
-    const charList=safeManifestArray(libManifest.characters||libManifest.chars,report,'characters');
-    for(const entry of charList){
-      if(!entry||typeof entry!=='object'){addImportIssue(report,'warning','Geçersiz karakter manifest öğesi atlandı');continue;}
-      const it=await getCharLib(entry.file,'Kütüphane karakteri');
-      if(it) it.name=safeDisplayName(entry.displayName||entry.name,'Karakter');
-    }
-    const bgList=safeManifestArray(libManifest.backgrounds||libManifest.bgs,report,'backgrounds');
-    for(const bb of bgList){
-      if(!bb||typeof bb!=='object'){addImportIssue(report,'warning','Geçersiz arkaplan manifest öğesi atlandı');continue;}
-      const safeRef=normalizeArchivePath(bb.file);
-      if(!safeRef){addImportIssue(report,'warning','Kütüphane arkaplanı: geçersiz dosya yolu');continue;}
-      const bf=resolveZipFile(zipIndex,[prefix+'backgrounds/'+safeRef,'backgrounds/'+safeRef],report,'Kütüphane arkaplanı / '+safeRef);
-      if(!bf){addImportIssue(report,'missing','Kütüphane arkaplanı: '+safeRef+' bulunamadı');continue;}
-      const it=await getBgLib(safeRef,await bf.async('string'),'Kütüphane arkaplanı');
-      if(it) it.name=safeDisplayName(bb.name,'Arkaplan');
-    }
-  }
-
-  progress(38,'Karakter ve arkaplan kütüphanesi işlendi');
-  const sndNameByFile=new Map();
-  if(libManifest&&typeof libManifest==='object'){
-    for(const sm of safeManifestArray(libManifest.sounds,report,'sounds')){
-      if(!sm||typeof sm!=='object') continue;
-      const safeRef=normalizeArchivePath(sm.file);
-      if(safeRef) sndNameByFile.set(safeRef.split('/').pop().toLowerCase(),safeDisplayName(sm.name,'Ses'));
-    }
-  }
-
-  const sndList=zipIndex.files.filter(x=>/(^|\/)sounds\//i.test(x.path)&&/\.(wav|mp3|webm|m4a|ogg)$/i.test(x.path));
-  const soundGroups=new Map();
-  for(const s of sndList){
-    const base=s.path.split('/').pop(),key=base.toLowerCase(),arr=soundGroups.get(key)||[];
-    arr.push({...s,base}); soundGroups.set(key,arr);
-  }
-  const soundBases=new Set(); let sN=0;
-  for(const [key,group] of soundGroups){
-    if(group.length>1){
-      addImportIssue(report,'warning','Ses '+group[0].base+' için '+group.length+' aynı adlı dosya bulundu; belirsiz olduğu için atlandı');
-      continue;
-    }
-    const s=group[0],base=s.base;
-    let ext=(s.path.split('.').pop()||'wav').toLowerCase();
-    if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav';
-    soundBases.add(base);
-    try{
-      ns.sounds.push({id:nextId(),name:sndNameByFile.get(key)||('Ses '+(++sN)),buf:await s.file.async('arraybuffer'),ext,sourceFile:base});
-      report.sounds++;
-    }catch(err){addImportIssue(report,'skipped','Ses okunamadı: '+base);}
-  }
-
-  progress(52,'Sesler işlendi');
-  for(let i=0;i<pageKeys.length;i++){
-    const key=pageKeys[i],po=J[key],page=newPage();
-    if(po&&typeof po==='object'&&!Array.isArray(po)){
-      page.sjrMeta=pageMetaWithoutSprites(po);
-      if(po.md5){
-        const safeRef=normalizeArchivePath(po.md5);
-        if(!safeRef) addImportIssue(report,'warning',key+': geçersiz arkaplan yolu');
-        else{
-          const bf=resolveZipFile(zipIndex,[prefix+'backgrounds/'+safeRef,'backgrounds/'+safeRef],report,key+' arkaplanı / '+safeRef);
-          if(!bf) addImportIssue(report,'missing',key+': '+safeRef+' arkaplan dosyası bulunamadı');
-          else{
-            try{
-              const bgText=await bf.async('string'),solidFill=solidColorSvgFill(bgText);
-              if(solidFill) page.bg={mode:'color',color:solidFill,asset:null,bgId:null};
-              else{
-                const it=await getBgLib(safeRef,bgText,key+' arkaplanı');
-                if(it) page.bg={mode:'image',asset:it.asset,color:'#fff',bgId:it.id};
-              }
-            }catch(err){addImportIssue(report,'skipped',key+': arkaplan okunamadı');}
-          }
-        }
-      }
-      const sprites=Array.isArray(po.sprites)?po.sprites:[];
-      for(const spId of sprites){
-        if(typeof spId!=='string'||!spId){addImportIssue(report,'skipped',key+': geçersiz sprite kimliği');continue;}
-        const sp=Object.prototype.hasOwnProperty.call(po,spId)?po[spId]:null;
-        if(!sp||typeof sp!=='object'||Array.isArray(sp)){addImportIssue(report,'missing',key+': '+spId+' sprite nesnesi bulunamadı');continue;}
-        if(sp.type==='text'){
-          const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
-          const fy=((typeof sp.ycoor==='number')?sp.ycoor:STAGE_H/2)/STAGE_H;
-          page.texts.push({id:nextId(),str:String(sp.str??'').slice(0,2000),
-            color:colorToHex(sp.color||'#1a1a1a'),fontsize:sp.fontsize||16,
-            fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),sjrId:spId,sjrMeta:cloneJson(sp)});
-          report.texts++; continue;
-        }
-        if(sp.type!=='sprite'){addImportIssue(report,'skipped',key+': '+spId+' desteklenmeyen sprite tipi ('+String(sp.type||'yok')+')');continue;}
-        const lib=await getCharLib(sp.md5,key+' / '+spId);
-        if(!lib){addImportIssue(report,'skipped',key+': '+spId+' karakteri asset eksik olduğu için atlandı');continue;}
-        if(sp.name&&lib.name==='Karakter') lib.name=safeDisplayName(sp.name,'Karakter');
-        if(Array.isArray(sp.sounds)){
-          for(const ref of sp.sounds){
-            const base=String(ref||'').replace(/^.*[\\/]/,'');
-            if(base&&base!=='pop.mp3'&&!soundBases.has(base)) addImportIssue(report,'missing',key+' / '+spId+': ses bulunamadı '+base);
-          }
-        }
-        const w=sp.w||lib.asset.w||150,h=sp.h||lib.asset.h||150,aspect=h/w;
-        const scale=(typeof sp.scale==='number')?sp.scale:((typeof sp.defaultScale==='number')?sp.defaultScale:(STAGE_W*0.27/w));
-        const sizePct=Math.max(4,Math.min(100,(scale*w)/STAGE_W*100));
-        const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
-        const fy=((typeof sp.ycoor==='number')?sp.ycoor:STAGE_H/2)/STAGE_H;
-        page.chars.push({id:nextId(),libId:lib.id,name:safeDisplayName(sp.name||lib.name,'Karakter'),
-          asset:lib.asset,fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),sizePct,flip:!!sp.flip,aspect,
-          sjrId:spId,sjrMeta:cloneJson(sp)});
-      }
-    }
-    ns.pages.push(page); report.pages++;
-    progress(55+Math.round(35*(i+1)/Math.max(1,pageKeys.length)),'Sayfa '+(i+1)+' / '+pageKeys.length+' içe aktarılıyor');
-  }
-  if(!ns.pages.length){ns.pages.push(newPage());report.pages=1;}
-  progress(94,'Çalışma alanı hazırlanıyor…');
-
-  checkpoint();
-  Object.assign(state,ns); state.current=Math.max(0,Math.min(ns.current,ns.pages.length-1)); state.selected=null;
-  document.getElementById('pname').value=safeDisplayName(data&&data.name,'Benim Projem').slice(0,40);
-  render(); setTab('chars');
-  progress(100,'İçe aktarma tamamlandı');
-  return report;
-}
-
+document.getElementById('exportBtn').onclick=()=>sjrTransfer.exportProject();
 document.getElementById('importBtn').onclick=()=>document.getElementById('srjFile').click();
-document.getElementById('srjFile').addEventListener('change',async e=>{
-  const file=e.target.files[0]; e.target.value='';
+document.getElementById('srjFile').addEventListener('change',async event=>{
+  const file=event.target.files[0]; event.target.value='';
   if(!file) return;
-  const onay=await confirmModal({
+  const confirmed=await confirmModal({
     title:'İçe aktarma',
     okText:'Evet, içe aktar',
     cancelText:'Vazgeç',
@@ -1659,18 +1295,8 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
       +'kaldırıp yerine <span class="fname">'+escapeHtml(file.name)+'</span> dosyasındaki projeyi yükler.'
       +'<div class="warnline">↶ İçe aktardıktan sonra gerekirse Geri Al ile önceki çalışmana dönebilirsin.</div>'
   });
-  if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
-  if(transferBusy){showToast('Başka bir içe/dışa aktarma işlemi sürüyor');return;}
-  const btn=document.getElementById('importBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Yükleniyor…';
-  const op=startOperation('İçe aktarılıyor');
-  try{
-    const report=await importSRJ(file,op.update);
-    op.close();
-    showImportReport(report);
-  }catch(err){
-    console.error(err);
-    showToast('İçe aktarılamadı: '+(err.message||'dosya okunamadı'),'err');
-  }finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
+  if(!confirmed){showToast('İçe aktarma iptal edildi');return;}
+  await sjrTransfer.runImport(file);
 });
 
 
