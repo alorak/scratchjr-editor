@@ -649,16 +649,34 @@ function addBgToLib(asset,name){ const it={id:nextId(),name:name||'Arkaplan',ass
 function applyBg(libItem){ state.pages[state.current].bg={ mode:'image', asset:libItem.asset, color:'#fff', bgId:libItem.id }; }
 
 /* ---------- TABLAR ---------- */
-document.getElementById('tabbar').addEventListener('click',e=>{
+const tabbar=document.getElementById('tabbar');
+tabbar.addEventListener('click',e=>{
   const t=e.target.closest('.tab'); if(!t) return; setTab(t.dataset.tab);
+});
+tabbar.addEventListener('keydown',e=>{
+  if(!['ArrowRight','ArrowLeft','Home','End'].includes(e.key)) return;
+  const tabs=[...tabbar.querySelectorAll('.tab')],current=tabs.indexOf(document.activeElement);
+  if(current<0) return;
+  e.preventDefault();
+  let next=current;
+  if(e.key==='ArrowRight') next=(current+1)%tabs.length;
+  if(e.key==='ArrowLeft') next=(current-1+tabs.length)%tabs.length;
+  if(e.key==='Home') next=0;
+  if(e.key==='End') next=tabs.length-1;
+  tabs[next].focus(); setTab(tabs[next].dataset.tab);
 });
 function setTab(name){
   document.querySelectorAll('.tab').forEach(t=>{
     const active=t.dataset.tab===name;
     t.classList.toggle('active',active);
     t.setAttribute('aria-selected',active?'true':'false');
+    t.tabIndex=active?0:-1;
   });
-  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
+  document.querySelectorAll('.panel').forEach(p=>{
+    const active=p.dataset.tab===name;
+    p.classList.toggle('active',active);
+    p.hidden=!active;
+  });
   if(name==='stage'){ renderWorkspace(); }
   if(name==='bg'){ renderBgTab(); }
 }
