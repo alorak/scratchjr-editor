@@ -7,7 +7,7 @@ test('scalePathData scales absolute and relative path coordinates',()=>{
     scalePathData('M10 20 L30 40 H50 V60 C1 2 3 4 5 6 Z',2,3),
     'M20 60L60 120H100V180C2 6 6 12 10 18Z'
   );
-  assert.equal(scalePathData('m1 2 l3 4',2,2),'m2 4 l6 8');
+  assert.equal(scalePathData('m1 2 l3 4',2,2),'m2 4l6 8');
 });
 
 test('scalePathData preserves arc flags while scaling radii and endpoints',()=>{
