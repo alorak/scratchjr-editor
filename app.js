@@ -97,6 +97,68 @@ document.addEventListener('keydown',e=>{
   }
 });
 
+/* ---------- ortak dialog / progress yardımcıları ---------- */
+const dialogState=new WeakMap(),dialogStack=[];
+function dialogFocusables(overlay){
+  return [...overlay.querySelectorAll('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
+    .filter(el=>!el.hidden&&el.offsetParent!==null);
+}
+function showDialog(overlay,initialFocus,onEscape){
+  if(!overlay) return;
+  const opener=document.activeElement instanceof HTMLElement?document.activeElement:null;
+  dialogState.set(overlay,{opener,onEscape});
+  const oldIndex=dialogStack.indexOf(overlay); if(oldIndex>=0) dialogStack.splice(oldIndex,1);
+  dialogStack.push(overlay);
+  overlay.classList.add('show');
+  requestAnimationFrame(()=>{
+    const target=initialFocus||dialogFocusables(overlay)[0]||overlay;
+    if(target===overlay&&!overlay.hasAttribute('tabindex')) overlay.setAttribute('tabindex','-1');
+    target.focus?.();
+  });
+}
+function hideDialog(overlay,restoreFocus=true){
+  if(!overlay) return;
+  overlay.classList.remove('show');
+  const i=dialogStack.lastIndexOf(overlay); if(i>=0) dialogStack.splice(i,1);
+  const stateForDialog=dialogState.get(overlay);
+  dialogState.delete(overlay);
+  if(restoreFocus&&stateForDialog?.opener?.isConnected) requestAnimationFrame(()=>stateForDialog.opener.focus());
+}
+document.addEventListener('keydown',e=>{
+  const overlay=dialogStack[dialogStack.length-1];
+  if(!overlay||!overlay.classList.contains('show')) return;
+  if(e.key==='Escape'){
+    e.preventDefault(); e.stopPropagation();
+    const close=dialogState.get(overlay)?.onEscape;
+    if(close) close(); else hideDialog(overlay);
+    return;
+  }
+  if(e.key!=='Tab') return;
+  const items=dialogFocusables(overlay);
+  if(!items.length){e.preventDefault();overlay.focus();return;}
+  const first=items[0],last=items[items.length-1];
+  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
+  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
+},true);
+
+function startOperation(title){
+  const box=document.getElementById('operationProgress');
+  const titleEl=document.getElementById('operationProgressTitle');
+  const pctEl=document.getElementById('operationProgressPct');
+  const bar=document.getElementById('operationProgressBar');
+  const label=document.getElementById('operationProgressLabel');
+  box.hidden=false; titleEl.textContent=title;
+  const update=(percent,text)=>{
+    const p=Math.max(0,Math.min(100,Math.round(Number(percent)||0)));
+    pctEl.textContent=p+'%'; bar.style.width=p+'%'; label.textContent=text||'İşleniyor…';
+  };
+  update(0,'Hazırlanıyor…');
+  return {
+    update,
+    close(){box.hidden=true;bar.style.width='0%';pctEl.textContent='0%';}
+  };
+}
+
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
 let autosaveTimer=null, autosaveErrorShown=false, autosaveGeneration=0;
