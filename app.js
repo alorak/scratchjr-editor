@@ -1502,13 +1502,13 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     hideTrim();
     timer.textContent='00:00:00.00';
     document.getElementById('srecTitle').textContent=nextName();
-    overlay.classList.add('show');
+    showDialog(overlay,recBtn,closeModal);
     requestAnimationFrame(()=>{resizeCvs();drawIdle();});
   }
 
   function closeModal(){
     startRequestId++;
-    overlay.classList.remove('show');
+    hideDialog(overlay);
     recBtn.disabled=false;
     if(isRecording) stopRec(false);
     stopPlayback();
@@ -1661,7 +1661,6 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   document.getElementById('srecClose').onclick=closeModal;
   overlay.addEventListener('click',e=>{if(e.target===overlay)closeModal();});
   recBtn.onclick=()=>{if(isRecording)stopRec(true);else startRec();};
-  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&overlay.classList.contains('show')) closeModal();});
 })();
 
 
@@ -2192,12 +2191,11 @@ function showImportReport(report){
   }else{
     const li=document.createElement('li'); li.className='import-issue ok'; li.textContent='Herhangi bir eksik veya atlanan öğe tespit edilmedi.'; issues.appendChild(li);
   }
-  ov.classList.add('show'); document.getElementById('importReportClose').focus();
+  showDialog(ov,document.getElementById('importReportClose'),closeImportReport);
 }
-function closeImportReport(){document.getElementById('importReportOverlay').classList.remove('show');}
+function closeImportReport(){hideDialog(document.getElementById('importReportOverlay'));}
 document.getElementById('importReportClose').onclick=closeImportReport;
 document.getElementById('importReportOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('importReportOverlay'))closeImportReport();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('importReportOverlay').classList.contains('show'))closeImportReport();});
 
 /* ---------- modal onayı ---------- */
 function setSafeModalHtml(target,html){
@@ -2221,17 +2219,17 @@ function confirmModal(opts){
     okBtn.textContent=opts.okText||'Evet';
     cancelBtn.textContent=opts.cancelText||'Vazgeç';
     function close(val){
-      ov.classList.remove('show');
+      hideDialog(ov);
       okBtn.removeEventListener('click',onOk); cancelBtn.removeEventListener('click',onCancel);
       ov.removeEventListener('click',onBackdrop); document.removeEventListener('keydown',onKey);
       res(val);
     }
     const onOk=()=>close(true), onCancel=()=>close(false);
     const onBackdrop=e=>{ if(e.target===ov) close(false); };
-    const onKey=e=>{ if(e.key==='Escape') close(false); else if(e.key==='Enter') close(true); };
+    const onKey=e=>{ if(e.key==='Enter'){e.preventDefault();close(true);} };
     okBtn.addEventListener('click',onOk); cancelBtn.addEventListener('click',onCancel);
     ov.addEventListener('click',onBackdrop); document.addEventListener('keydown',onKey);
-    ov.classList.add('show'); okBtn.focus();
+    showDialog(ov,okBtn,()=>close(false));
   });
 }
 
@@ -2314,12 +2312,13 @@ function showSvgInfo(libItem){
     compatEl.className='compat-bar warn';
     compatEl.textContent='↪ Kaynak vektör korunuyor; yeni yüklemelerde bu yapı otomatik olarak raster fallback yoluna alınır.';
   }
-  document.getElementById('infoOverlay').classList.add('show');
+  const overlay=document.getElementById('infoOverlay');
+  showDialog(overlay,document.getElementById('infoClose'),closeInfoDialog);
 }
-
-document.getElementById('infoClose').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoCloseBtn').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))document.getElementById('infoOverlay').classList.remove('show');});
+function closeInfoDialog(){hideDialog(document.getElementById('infoOverlay'));}
+document.getElementById('infoClose').onclick=closeInfoDialog;
+document.getElementById('infoCloseBtn').onclick=closeInfoDialog;
+document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))closeInfoDialog();});
 
 /* ---------- arkaplan picker ---------- */
 let bgPickTarget=null;
@@ -2345,9 +2344,10 @@ function openBgPick(pageIdx){
       grid.appendChild(item);
     });
   }
-  document.getElementById('bgPickOverlay').classList.add('show');
+  const overlay=document.getElementById('bgPickOverlay');
+  showDialog(overlay,document.getElementById('bgPickClose'),closeBgPick);
 }
-function closeBgPick(){ document.getElementById('bgPickOverlay').classList.remove('show'); bgPickTarget=null; }
+function closeBgPick(){ hideDialog(document.getElementById('bgPickOverlay')); bgPickTarget=null; }
 function applyBgToPage(pageIdx,libItem){
   state.pages[pageIdx].bg={mode:'image',asset:libItem.asset,color:'#fff',bgId:libItem.id};
   if(pageIdx===state.current) renderStage();
@@ -2384,9 +2384,10 @@ function openCharPick(pageIdx){
       grid.appendChild(item);
     });
   }
-  document.getElementById('charPickOverlay').classList.add('show');
+  const overlay=document.getElementById('charPickOverlay');
+  showDialog(overlay,document.getElementById('charPickClose'),closeCharPick);
 }
-function closeCharPick(){ document.getElementById('charPickOverlay').classList.remove('show'); charPickTarget=null; }
+function closeCharPick(){ hideDialog(document.getElementById('charPickOverlay')); charPickTarget=null; }
 function addCharToPage(pageIdx,libItem){
   const a=libItem.asset; const aspect=a.h/a.w;
   state.pages[pageIdx].chars.push({id:nextId(),libId:libItem.id,name:libItem.name,asset:a,fx:0.5,fy:0.5,sizePct:27,flip:false,aspect});
@@ -2399,11 +2400,6 @@ function addCharToPage(pageIdx,libItem){
 }
 document.getElementById('charPickClose').onclick=closeCharPick;
 document.getElementById('charPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('charPickOverlay')) closeCharPick(); });
-document.addEventListener('keydown',e=>{
-  if(e.key!=='Escape') return;
-  document.getElementById('infoOverlay').classList.remove('show');
-  closeBgPick(); closeCharPick();
-});
 
 /* ---------- toast ---------- */
 let toastTimer=null;
