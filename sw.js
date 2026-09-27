@@ -7,6 +7,9 @@ const CORE=[
   './roundtrip-utils.mjs',
   './ui-utils.mjs',
   './file-utils.mjs',
+  './audio-utils.mjs',
+  './audio-recorder.mjs',
+  './sjr-archive-utils.mjs',
   './vendor/jszip.min.js',
   './vendor/spark-md5.min.js',
   './vendor/imagetracer_v1.2.6.js'
