@@ -17,7 +17,7 @@ test('critical round-trip guards remain wired',()=>{
   assert.match(app,/pageMetaWithoutSprites\(po\)/);
   assert.match(app,/escapeHtml\(c\.name\|\|'Karakter'\)/);
   assert.match(app,/assertFileSize\(file,MAX_SJR_BYTES/);
-  assert.match(app,/assertZipSafety\(zip\)/);
+  assert.match(app,/assertZipSafety\(zip,\{maxEntries:MAX_ZIP_ENTRIES,maxEntryBytes:MAX_ZIP_ENTRY,maxTotalBytes:MAX_ZIP_UNCOMPRESSED\}\)/);
   assert.match(app,/restoreAutosave/);
   assert.doesNotMatch(app,/setAttribute\('stroke','#1a1a1a'\)/);
   assert.doesNotMatch(app,/state\.current=0; state\.selected=null/);
@@ -53,11 +53,14 @@ test('complex SVGs use deterministic raster fallback policy',()=>{
   assert.match(app,/svgPolicy\.externalRefs/);
 });
 
-test('audio lifecycle closes contexts and prevents late recording blobs',()=>{
-  assert.match(app,/function closeAudioContext\(ctx\)/);
+test('audio lifecycle closes contexts and prevents late recording blobs',async()=>{
+  const audio=await readFile(new URL('../audio-utils.mjs',import.meta.url),'utf8');
+  const recorder=await readFile(new URL('../audio-recorder.mjs',import.meta.url),'utf8');
+  assert.match(audio,/export function closeAudioContext\(ctx\)/);
   assert.match(app,/window\.addEventListener\('pagehide',disposeAudioResources\)/);
-  assert.match(app,/discardOnStop/);
-  assert.match(app,/URL\.revokeObjectURL\(blobUrl\)/);
+  assert.match(app,/audioRecorderController\.dispose\(\)/);
+  assert.match(recorder,/discardOnStop/);
+  assert.match(recorder,/revokeObjectURL\(blobUrl\)/);
 });
 
 test('unsafe SVG fallback is rejected instead of nesting SVG data URLs',()=>{
@@ -103,11 +106,12 @@ test('ImageTracer output re-enters SVG policy and normalization',()=>{
   assert.match(app,/normalizeSvgForBackground\(traced\)/);
 });
 
-test('recorder invalidates pending microphone permission requests',()=>{
-  assert.match(app,/startRequestId/);
-  assert.match(app,/const requestId=\+\+startRequestId/);
-  assert.match(app,/requestId!==startRequestId\|\|!overlay\.classList\.contains\('show'\)/);
-  assert.match(app,/requestedStream\.getTracks\(\)\.forEach\(t=>t\.stop\(\)\)/);
+test('recorder invalidates pending microphone permission requests',async()=>{
+  const recorder=await readFile(new URL('../audio-recorder.mjs',import.meta.url),'utf8');
+  assert.match(recorder,/startRequestId/);
+  assert.match(recorder,/const requestId=\+\+startRequestId/);
+  assert.match(recorder,/requestId!==startRequestId\|\|!overlay\.classList\.contains\('show'\)/);
+  assert.match(recorder,/requestedStream\.getTracks\(\)\.forEach\(track=>track\.stop\(\)\)/);
 });
 
 test('sound preview cancels stale async decodes',()=>{
@@ -117,13 +121,14 @@ test('sound preview cancels stale async decodes',()=>{
   assert.match(app,/generation===playbackGeneration&&currentPlayingId===s\.id/);
 });
 
-test('import resolver avoids ambiguous basename fallback and unsafe paths',()=>{
-  assert.match(app,/function buildZipIndex\(zip\)/);
-  assert.match(app,/function resolveZipFile\(index,candidates,report,label\)/);
-  assert.match(app,/matches\.length>1/);
-  assert.match(app,/belirsiz olduğu için atlandı/);
-  assert.match(app,/normalizeArchivePath\(original\)/);
-  assert.doesNotMatch(app,/if\(!found && !zf\.dir && p\.toLowerCase\(\)\.split\('\/'\)\.pop\(\)===base\) found=zf/);
+test('import resolver avoids ambiguous basename fallback and unsafe paths',async()=>{
+  const archive=await readFile(new URL('../sjr-archive-utils.mjs',import.meta.url),'utf8');
+  assert.match(archive,/export function buildZipIndex\(zip\)/);
+  assert.match(archive,/export function resolveZipFile\(index,candidates,report,label\)/);
+  assert.match(archive,/matches\.length>1/);
+  assert.match(archive,/belirsiz olduğu için atlandı/);
+  assert.match(archive,/normalizeArchivePath\(original\)/);
+  assert.doesNotMatch(app,/function buildZipIndex\(zip\)/);
 });
 
 test('import validates project metadata before replacing state',()=>{
@@ -322,4 +327,21 @@ test('app imports extracted utility modules and service worker caches them',asyn
   assert.match(file,/export function colorToHex/);
   assert.match(sw,/\.\/ui-utils\.mjs/);
   assert.match(sw,/\.\/file-utils\.mjs/);
+});
+
+
+test('audio recorder and SJR archive helpers are extracted and cached offline',async()=>{
+  const recorder=await readFile(new URL('../audio-recorder.mjs',import.meta.url),'utf8');
+  const audio=await readFile(new URL('../audio-utils.mjs',import.meta.url),'utf8');
+  const archive=await readFile(new URL('../sjr-archive-utils.mjs',import.meta.url),'utf8');
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.match(app,/from '\.\/audio-recorder\.mjs'/);
+  assert.match(app,/from '\.\/audio-utils\.mjs'/);
+  assert.match(app,/from '\.\/sjr-archive-utils\.mjs'/);
+  assert.match(app,/createAudioRecorder\(\{/);
+  assert.doesNotMatch(app,/\/\* ---- SES KAYIT MODALI ---- \*\/\s*\(function\(\)/);
+  assert.match(recorder,/export function createAudioRecorder/);
+  assert.match(audio,/export function audioBufferToWav/);
+  assert.match(archive,/export function assertZipSafety/);
+  for(const asset of ['audio-utils.mjs','audio-recorder.mjs','sjr-archive-utils.mjs']) assert.ok(sw.includes(asset),asset+' missing from service worker cache');
 });
