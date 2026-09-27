@@ -395,7 +395,7 @@ function normalizeSvgForChar(svgText, pxW, pxH){
   }catch(e){return null;}
 }
 
-/* ---------- ImageTracer (gerçek vektör) — tembel yükleme ---------- */
+/* ---------- ImageTracer (yerel gerçek-vektör dönüştürücü) ---------- */
 function loadTracer(){
   if(window.ImageTracer) return Promise.resolve();
   return Promise.reject(new Error('Yerel ImageTracer yüklenemedi'));
@@ -1653,13 +1653,16 @@ async function renderThumb(page){
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*STAGE_W,t.fy*STAGE_H);}catch(e){}
   }
-  return await new Promise(res=>cv.toBlob(b=>b.arrayBuffer().then(res),'image/png'));
+  return await new Promise((res,rej)=>cv.toBlob(blob=>{
+    if(!blob) return rej(new Error('Thumbnail PNG oluşturulamadı'));
+    blob.arrayBuffer().then(res,rej);
+  },'image/png'));
 }
 function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H,r=Math.max(W/iw,H/ih),dw=iw*r,dh=ih*r;
   try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch(e){} }
 
 async function exportSRJ(pagesArg){
-  if(typeof JSZip==='undefined') return showToast('Sıkıştırma kütüphanesi yüklenemedi (internet?)','err');
+  if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
   // Hiç sahneye eklenmemiş karakter uyarısı
   const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
@@ -1778,7 +1781,7 @@ async function exportSRJ(pagesArg){
 }
 document.getElementById('exportBtn').onclick=exportSRJ;
 
-/* ---------- içe aktarma (.srj) ---------- */
+/* ---------- içe aktarma (.sjr) ---------- */
 function svgImageHref(svgText){
   try{ const im=new DOMParser().parseFromString(svgText,'image/svg+xml').querySelector('image');
     if(!im) return null;
