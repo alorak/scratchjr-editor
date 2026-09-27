@@ -218,8 +218,8 @@ test('technical cleanup removes deprecated base64 and dead path merge code',()=>
 });
 
 test('export thumbnail rejects null canvas blobs',()=>{
-  assert.match(app,/if\(!blob\) return rej\(new Error\('Thumbnail PNG oluşturulamadı'\)\)/);
-  assert.doesNotMatch(app,/toBlob\(b=>b\.arrayBuffer\(\)\.then\(res\)/);
+  assert.match(transfer,/if\(!blob\)return reject\(new Error\('Thumbnail PNG oluşturulamadı'\)\)/);
+  assert.doesNotMatch(transfer,/toBlob\(b=>b\.arrayBuffer\(\)\.then\(res\)/);
 });
 
 test('real-world SJR archive test is part of npm test discovery',async()=>{
@@ -341,7 +341,7 @@ test('audio recorder and SJR archive helpers are extracted and cached offline',a
   const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
   assert.match(app,/from '\.\/audio-recorder\.mjs'/);
   assert.match(app,/from '\.\/audio-utils\.mjs'/);
-  assert.match(app,/from '\.\/sjr-archive-utils\.mjs'/);
+  assert.match(transfer,/from '\.\/sjr-archive-utils\.mjs'/);
   assert.match(app,/createAudioRecorder\(\{/);
   assert.doesNotMatch(app,/\/\* ---- SES KAYIT MODALI ---- \*\/\s*\(function\(\)/);
   assert.match(recorder,/export function createAudioRecorder/);
