@@ -5,13 +5,15 @@ import {readFile} from 'node:fs/promises';
 const app=await readFile(new URL('../app.js',import.meta.url),'utf8');
 const transfer=await readFile(new URL('../sjr-import-export.mjs',import.meta.url),'utf8');
 const stage=await readFile(new URL('../stage-controller.mjs',import.meta.url),'utf8');
+const pipeline=await readFile(new URL('../asset-pipeline.mjs',import.meta.url),'utf8');
+const library=await readFile(new URL('../library-controller.mjs',import.meta.url),'utf8');
 
 test('critical round-trip guards remain wired',()=>{
   assert.match(app,/MAX_PAGES=4/);
   assert.match(transfer,/selectBackgroundSvg\(asset,coverSvg\)/);
-  assert.match(app,/function fileToBackgroundAsset\(file\)/);
-  assert.match(app,/const a=await fileToBackgroundAsset\(f\)/);
-  assert.match(app,/preserveSvg:true/);
+  assert.match(pipeline,/async function fileToBackgroundAsset\(file\)/);
+  assert.match(library,/assetPipeline\.fileToBackgroundAsset\(file\)/);
+  assert.match(pipeline,/preserveSvg:true/);
   assert.match(transfer,/characters:charManifest/);
   assert.match(transfer,/resolveCurrentPageIndex\(J\.currentPage,pageKeys\)/);
   assert.match(transfer,/dataMetaWithoutJson\(data\)/);
@@ -21,7 +23,7 @@ test('critical round-trip guards remain wired',()=>{
   assert.match(transfer,/assertFileSize\(file,MAX_SJR_BYTES/);
   assert.match(transfer,/assertZipSafety\(zip,ZIP_LIMITS\)/);
   assert.match(app,/restoreAutosave/);
-  assert.doesNotMatch(app,/setAttribute\('stroke','#1a1a1a'\)/);
+  assert.doesNotMatch(pipeline,/setAttribute\('stroke','#1a1a1a'\)/);
   assert.doesNotMatch(app,/state\.current=0; state\.selected=null/);
 });
 
@@ -43,16 +45,16 @@ test('runtime has no remote CDN or Google Font dependencies',async()=>{
 
 test('service worker caches all runtime dependencies',async()=>{
   const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
-  for(const asset of ['index.html','app.css','app.js','roundtrip-utils.mjs','ui-utils.mjs','file-utils.mjs','vendor/jszip.min.js','vendor/spark-md5.min.js','vendor/imagetracer_v1.2.6.js']){
+  for(const asset of ['index.html','app.css','app.js','roundtrip-utils.mjs','ui-utils.mjs','file-utils.mjs','asset-pipeline.mjs','library-controller.mjs','vendor/jszip.min.js','vendor/spark-md5.min.js','vendor/imagetracer_v1.2.6.js']){
     assert.ok(sw.includes(asset),asset+' missing from service-worker cache');
   }
   assert.match(app,/serviceWorker\.register\('\.\/sw\.js'\)/);
 });
 
 test('complex SVGs use deterministic raster fallback policy',()=>{
-  assert.match(app,/inspectSvgCompatibility\(text\)/);
-  assert.match(app,/svgPolicy\.safeDirectVector/);
-  assert.match(app,/svgPolicy\.externalRefs/);
+  assert.match(pipeline,/inspectSvgCompatibility\(text\)/);
+  assert.match(pipeline,/policy\.safeDirectVector/);
+  assert.match(pipeline,/policy\.externalRefs/);
 });
 
 test('audio lifecycle closes contexts and prevents late recording blobs',async()=>{
@@ -66,8 +68,8 @@ test('audio lifecycle closes contexts and prevents late recording blobs',async()
 });
 
 test('unsafe SVG fallback is rejected instead of nesting SVG data URLs',()=>{
-  assert.match(app,/SVG güvenli biçimde rasterize edilemedi/);
-  assert.doesNotMatch(app,/wrapRasterSvg\(svgDataURL/);
+  assert.match(pipeline,/SVG güvenli biçimde rasterize edilemedi/);
+  assert.doesNotMatch(pipeline,/wrapRasterSvg\(rawUrl/);
 });
 
 test('pagehide audio cleanup does not trigger a sound-list rerender',()=>{
@@ -84,21 +86,20 @@ test('service worker refreshes assets from network before cached fallback',async
 });
 
 test('SVG security policy runs before browser rendering',()=>{
-  const start=app.indexOf('async function fileToAsset(file)');
-  const end=app.indexOf('/* ---------- arkaplan asset dönüşümü ---------- */',start);
-  const fn=app.slice(start,end);
+  const start=pipeline.indexOf('async function fileToAsset(file)');
+  const end=pipeline.indexOf('async function fileToBackgroundAsset(file)',start);
+  const fn=pipeline.slice(start,end);
   const inspectAt=fn.indexOf('inspectSvgCompatibility(text)');
-  const loadAt=fn.indexOf('loadImage(svgDataURL)');
+  const loadAt=fn.indexOf('loadImage(rawUrl)');
   assert.ok(inspectAt>=0&&loadAt>=0&&inspectAt<loadAt);
-  assert.match(fn,/svgPolicy\.activeContent/);
+  assert.match(fn,/policy\.activeContent/);
 });
 
 test('backgrounds share the same complex-SVG fallback policy',()=>{
-  const start=app.indexOf('async function fileToBackgroundAsset(file)');
-  const end=app.indexOf('/* ---------- kütüphane \/ yerleştirme ---------- */',start);
-  const fn=app.slice(start,end);
+  const start=pipeline.indexOf('async function fileToBackgroundAsset(file)');
+  const fn=pipeline.slice(start);
   assert.match(fn,/policy\.safeDirectVector/);
-  assert.match(fn,/svgToPngPreview\(rawURL/);
+  assert.match(fn,/svgToPngPreview\(rawUrl/);
   assert.match(fn,/policy\.activeContent/);
 });
 
@@ -381,4 +382,23 @@ test('stage controller owns page rendering interactions and pickers',async()=>{
   assert.match(stage,/function openBgPick\(pageIndex\)/);
   assert.match(stage,/function openCharPick\(pageIndex\)/);
   assert.ok(sw.includes('stage-controller.mjs'),'stage controller missing from service-worker cache');
+});
+
+
+test('asset pipeline and library controller own image workflows',async()=>{
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.match(app,/from '\.\/asset-pipeline\.mjs'/);
+  assert.match(app,/from '\.\/library-controller\.mjs'/);
+  assert.match(app,/createAssetPipeline\(\{/);
+  assert.match(app,/createLibraryController\(\{/);
+  assert.doesNotMatch(app,/function normalizeSvgForChar/);
+  assert.doesNotMatch(app,/function renderCharLib\(\)/);
+  assert.match(pipeline,/export function createAssetPipeline/);
+  assert.match(pipeline,/async function fileToAsset\(file\)/);
+  assert.match(library,/export function createLibraryController/);
+  assert.match(library,/function renderCharLib\(\)/);
+  assert.match(library,/function renderBgTab\(\)/);
+  assert.match(library,/function showSvgInfo\(item\)/);
+  assert.ok(sw.includes('asset-pipeline.mjs'),'asset pipeline missing from service-worker cache');
+  assert.ok(sw.includes('library-controller.mjs'),'library controller missing from service-worker cache');
 });
