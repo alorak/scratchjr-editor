@@ -17,7 +17,7 @@ test('critical round-trip guards remain wired',()=>{
   assert.match(transfer,/dataMetaWithoutJson\(data\)/);
   assert.match(transfer,/jsonMetaWithoutPages\(J,pageKeys\)/);
   assert.match(transfer,/pageMetaWithoutSprites\(sourcePage\)/);
-  assert.match(app,/escapeHtml\(c\.name\|\|'Karakter'\)/);
+  assert.match(stage,/escapeHtml\(selected\.name\|\|'Karakter'\)/);
   assert.match(transfer,/assertFileSize\(file,MAX_SJR_BYTES/);
   assert.match(transfer,/assertZipSafety\(zip,ZIP_LIMITS\)/);
   assert.match(app,/restoreAutosave/);
@@ -285,8 +285,8 @@ test('dialogs share focus trap escape handling and focus restoration',async()=>{
 });
 
 test('page pickers restore focus even after page controls rerender',()=>{
-  assert.match(app,/bgBtn\.dataset\.pageBg=String\(i\)/);
-  assert.match(app,/charBtn\.dataset\.pageChar=String\(i\)/);
+  assert.match(stage,/bgBtn\.dataset\.pageBg=String\(index\)/);
+  assert.match(stage,/charBtn\.dataset\.pageChar=String\(index\)/);
   assert.match(stage,/querySelector\('\[data-page-bg="'\+target\+'"\]'\)\?\.focus\(\)/);
   assert.match(stage,/querySelector\('\[data-page-char="'\+target\+'"\]'\)\?\.focus\(\)/);
 });
