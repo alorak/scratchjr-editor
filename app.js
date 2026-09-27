@@ -1947,23 +1947,33 @@ async function importSRJ(file){
     }
   }
 
-  const sndNameByFile={};
+  const sndNameByFile=new Map();
   if(libManifest&&typeof libManifest==='object'){
     for(const sm of safeManifestArray(libManifest.sounds,report,'sounds')){
       if(!sm||typeof sm!=='object') continue;
       const safeRef=normalizeArchivePath(sm.file);
-      if(safeRef) sndNameByFile[safeRef.split('/').pop()]=safeDisplayName(sm.name,'Ses');
+      if(safeRef) sndNameByFile.set(safeRef.split('/').pop().toLowerCase(),safeDisplayName(sm.name,'Ses'));
     }
   }
 
   const sndList=zipIndex.files.filter(x=>/(^|\/)sounds\//i.test(x.path)&&/\.(wav|mp3|webm|m4a|ogg)$/i.test(x.path));
-  const soundBases=new Set(); let sN=0;
+  const soundGroups=new Map();
   for(const s of sndList){
+    const base=s.path.split('/').pop(),key=base.toLowerCase(),arr=soundGroups.get(key)||[];
+    arr.push({...s,base}); soundGroups.set(key,arr);
+  }
+  const soundBases=new Set(); let sN=0;
+  for(const [key,group] of soundGroups){
+    if(group.length>1){
+      addImportIssue(report,'warning','Ses '+group[0].base+' için '+group.length+' aynı adlı dosya bulundu; belirsiz olduğu için atlandı');
+      continue;
+    }
+    const s=group[0],base=s.base;
     let ext=(s.path.split('.').pop()||'wav').toLowerCase();
     if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav';
-    const base=s.path.split('/').pop(); soundBases.add(base);
+    soundBases.add(base);
     try{
-      ns.sounds.push({id:nextId(),name:sndNameByFile[base]||('Ses '+(++sN)),buf:await s.file.async('arraybuffer'),ext,sourceFile:base});
+      ns.sounds.push({id:nextId(),name:sndNameByFile.get(key)||('Ses '+(++sN)),buf:await s.file.async('arraybuffer'),ext,sourceFile:base});
       report.sounds++;
     }catch(err){addImportIssue(report,'skipped','Ses okunamadı: '+base);}
   }
@@ -1993,7 +2003,7 @@ async function importSRJ(file){
       const sprites=Array.isArray(po.sprites)?po.sprites:[];
       for(const spId of sprites){
         if(typeof spId!=='string'||!spId){addImportIssue(report,'skipped',key+': geçersiz sprite kimliği');continue;}
-        const sp=po[spId];
+        const sp=Object.prototype.hasOwnProperty.call(po,spId)?po[spId]:null;
         if(!sp||typeof sp!=='object'||Array.isArray(sp)){addImportIssue(report,'missing',key+': '+spId+' sprite nesnesi bulunamadı');continue;}
         if(sp.type==='text'){
           const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
