@@ -18,3 +18,5 @@ jobs:
         with:
           node-version: '22'
       - run: npm run ci
+      - name: Browser smoke test
+        run: npm run smoke:browser
