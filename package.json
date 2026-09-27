@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "check": "node --check app.js && node --check roundtrip-utils.mjs && node --check ui-utils.mjs && node --check file-utils.mjs && node --check sw.js && node --check tests/browser-smoke.mjs",
+    "check": "node --check app.js && node --check roundtrip-utils.mjs && node --check ui-utils.mjs && node --check file-utils.mjs && node --check audio-utils.mjs && node --check audio-recorder.mjs && node --check sjr-archive-utils.mjs && node --check sw.js && node --check tests/browser-smoke.mjs",
     "ci": "npm run check && npm test",
     "smoke:browser": "node tests/browser-smoke.mjs"
   }
