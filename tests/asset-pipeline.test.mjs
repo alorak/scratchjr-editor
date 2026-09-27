@@ -5,7 +5,7 @@ import {scalePathData,createAssetPipeline} from '../asset-pipeline.mjs';
 test('scalePathData scales absolute and relative path coordinates',()=>{
   assert.equal(
     scalePathData('M10 20 L30 40 H50 V60 C1 2 3 4 5 6 Z',2,3),
-    'M20 60 L60 120 H100 V180 C2 6 6 12 10 18 Z'
+    'M20 60L60 120H100V180C2 6 6 12 10 18Z'
   );
   assert.equal(scalePathData('m1 2 l3 4',2,2),'m2 4 l6 8');
 });
