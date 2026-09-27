@@ -820,6 +820,31 @@ function drawWaveCanvas(s,cvs){
     ctx.moveTo(px,0); ctx.lineTo(px,44); ctx.stroke();
   }
 }
+const pageThumbCache=new WeakMap(),thumbAssetIds=new WeakMap();
+let thumbAssetSeq=1,renderPagesTimer=null;
+function thumbAssetId(asset){
+  if(!asset||typeof asset!=='object') return 'none';
+  if(!thumbAssetIds.has(asset)) thumbAssetIds.set(asset,'a'+thumbAssetSeq++);
+  return thumbAssetIds.get(asset);
+}
+function pageThumbSignature(page){
+  return JSON.stringify([
+    page.bg?.mode,page.bg?.color,page.bg?.bgId,thumbAssetId(page.bg?.asset),
+    (page.chars||[]).map(c=>[c.id,c.libId,thumbAssetId(c.asset),+Number(c.fx||0).toFixed(4),+Number(c.fy||0).toFixed(4),+Number(c.sizePct||0).toFixed(2),!!c.flip,+Number(c.aspect||1).toFixed(4)]),
+    (page.texts||[]).map(t=>[t.id,t.str,t.color,t.fontsize,+Number(t.fx||0).toFixed(4),+Number(t.fy||0).toFixed(4)])
+  ]);
+}
+function getPageThumb(page,w,h){
+  const signature=pageThumbSignature(page),cached=pageThumbCache.get(page);
+  if(cached&&cached.signature===signature&&cached.w===w&&cached.h===h) return cached.url;
+  const url=renderPageThumbSync(page,w,h);
+  pageThumbCache.set(page,{signature,w,h,url});
+  return url;
+}
+function scheduleRenderPages(delay=80){
+  clearTimeout(renderPagesTimer);
+  renderPagesTimer=setTimeout(()=>{renderPagesTimer=null;renderPages();},delay);
+}
 function renderPageThumbSync(page,w,h){
   const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
   const ctx=cv.getContext('2d');
@@ -857,7 +882,7 @@ function renderPages(){
     acts.append(bgBtn,charBtn);
     // Thumbnail
     const thumb=document.createElement('div'); thumb.className='page-thumb'+(i===state.current?' active':'');
-    const img=document.createElement('img'); img.src=renderPageThumbSync(p,92,69); img.alt='Sayfa '+(i+1);
+    const img=document.createElement('img'); img.src=getPageThumb(p,92,69); img.alt='Sayfa '+(i+1);
     const num=document.createElement('span'); num.className='page-num'; num.textContent=i+1;
     const del=document.createElement('button'); del.className='page-del'; del.textContent='×'; del.title='Sayfayı sil';
     if(state.pages.length<=1) del.style.display='none';
@@ -1021,7 +1046,7 @@ function attachDrag(el,c){
       el.style.top=(c.fy*rect.height-dispH/2)+'px';
       updateGridLabels();
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
     el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
@@ -1081,7 +1106,7 @@ function renderTextPanel(){
       sw.className='text-color-swatch'+(selHex===c?' active':'');
       sw.style.background=c; sw.title=c;
       sw.tabIndex=0; sw.setAttribute('role','button'); sw.setAttribute('aria-label','Yazı rengini '+c+' yap');
-      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();};
+      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave();};
       sw.onclick=setColor; sw.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setColor();}};
       colorRow.appendChild(sw);
     });
@@ -1089,7 +1114,7 @@ function renderTextPanel(){
     custom.type='color'; custom.className='text-custom-color'; custom.title='Özel renk';
     custom.value=selHex;
     custom.onpointerdown=()=>checkpoint();
-    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave(); };
+    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave(); };
     colorRow.appendChild(custom);
   } else {
     editPanel.style.display='none';
@@ -1112,7 +1137,7 @@ function attachTextDrag(el,t){
       el.style.left=(t.fx*rect.width)+'px';
       el.style.top=(t.fy*rect.height)+'px';
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
     el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
@@ -1134,7 +1159,7 @@ document.getElementById('textStrInput').addEventListener('input',e=>{
   if(tel) tel.textContent=t.str;
   const listEl=document.querySelector('#textItemList .text-item.sel .text-item-preview');
   if(listEl){ listEl.textContent=t.str||'(boş)'; listEl.style.color=t.color; }
-  renderPages(); scheduleAutosave();
+  scheduleRenderPages(); scheduleAutosave();
 });
 
 document.getElementById('textSizeDown').onclick=()=>{
@@ -1165,7 +1190,7 @@ document.getElementById('textDelBtn').onclick=async()=>{
 };
 
 /* ---------- kontroller ---------- */
-function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave(); }
+function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); scheduleRenderPages(); scheduleAutosave(); }
 document.getElementById('sizeDown').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct-5);} };
 document.getElementById('sizeUp').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct+5);} };
 document.getElementById('sizeRange').addEventListener('pointerdown',()=>{if(getSel())checkpoint();});
@@ -1200,7 +1225,7 @@ document.getElementById('bgFile').addEventListener('change',async e=>{
   renderBadges(); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan eklendi');
 });
 document.getElementById('bgColor').addEventListener('pointerdown',()=>checkpoint());
-document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); });
+document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); scheduleRenderPages(); scheduleAutosave(); });
 document.getElementById('bgClear').onclick=()=>{ checkpoint(); state.pages[state.current].bg={mode:'color',color:'#eaf4ff',asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); };
 
 document.getElementById('sndUpload').onclick=()=>document.getElementById('sndFile').click();
@@ -2281,7 +2306,7 @@ function showToast(msg,kind){ const t=document.getElementById('toast'); t.textCo
 
 /* ---------- başlat ---------- */
 document.getElementById('pname').addEventListener('input',scheduleAutosave);
-window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); renderPages(); } });
+window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); scheduleRenderPages(60); } });
 stageEl.addEventListener('pointerdown',e=>{ if(e.target===stageEl||e.target.classList.contains('grid')||e.target.classList.contains('bgimg')){ state.selected=null; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); }});
 async function boot(){
   initGridLabels(); syncConv();
