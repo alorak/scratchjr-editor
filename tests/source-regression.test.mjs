@@ -105,7 +105,7 @@ test('backgrounds share the same complex-SVG fallback policy',()=>{
 
 test('ImageTracer output re-enters SVG policy and normalization',()=>{
   assert.match(app,/const tracedPolicy=inspectSvgCompatibility\(traced\)/);
-  assert.match(app,/normalizeSvgForChar\(traced/);
+  assert.match(pipeline,/normalizeSvgForChar\(traced/);
   assert.match(app,/normalizeSvgForBackground\(traced\)/);
 });
 
