@@ -28,3 +28,38 @@ export function mergeLayerOrder(oldLayers,emittedIds){
     ...emitted.filter(id=>!old.includes(id))
   ];
 }
+
+export function hasSvgRootPresentation(text){
+  const m=String(text||'').match(/<svg\b([^>]*)>/i);
+  if(!m) return false;
+  return /\b(?:fill|stroke|opacity|style|color|fill-opacity|stroke-opacity|stroke-width)\s*=/i.test(m[1]);
+}
+
+export function dataMetaWithoutJson(data){
+  const out=cloneJson(data)||{};
+  delete out.json;
+  return out;
+}
+
+export function jsonMetaWithoutPages(json,pageKeys){
+  const out=cloneJson(json)||{};
+  for(const key of (pageKeys||[])) delete out[key];
+  delete out.pages;
+  delete out.currentPage;
+  return out;
+}
+
+export function pageMetaWithoutSprites(page){
+  const out=cloneJson(page)||{};
+  const ids=Array.isArray(out.sprites)?[...out.sprites]:[];
+  for(const id of ids) delete out[id];
+  delete out.sprites;
+  return out;
+}
+
+export function resolveCurrentPageIndex(currentPage,pageKeys){
+  const pages=Array.isArray(pageKeys)?pageKeys:[];
+  if(!pages.length) return 0;
+  const idx=pages.indexOf(currentPage);
+  return idx>=0?idx:0;
+}
