@@ -119,3 +119,39 @@ test('simple path-only SVG remains eligible for direct vector normalization',()=
   assert.equal(info.safeDirectVector,true);
   assert.deepEqual(info.fallbackReasons,[]);
 });
+
+test('relative and CSS SVG references are rejected for offline safety',()=>{
+  const relative=inspectSvgCompatibility('<svg><image href="images/a.png"/></svg>');
+  assert.equal(relative.externalRefs,true);
+  assert.ok(relative.unsafeReferences.includes('images/a.png'));
+
+  const rootRelative=inspectSvgCompatibility('<svg><image href="/assets/a.png"/></svg>');
+  assert.equal(rootRelative.externalRefs,true);
+
+  const cssUrl=inspectSvgCompatibility('<svg><style>.x{fill:url(https://example.com/p.svg)}</style><path class="x" d="M0 0"/></svg>');
+  assert.equal(cssUrl.externalRefs,true);
+  assert.ok(cssUrl.fallbackReasons.includes('style-element'));
+
+  const imported=inspectSvgCompatibility('<svg><style>@import "theme.css";</style><path d="M0 0"/></svg>');
+  assert.equal(imported.externalRefs,true);
+  assert.ok(imported.unsafeReferences.includes('@import'));
+});
+
+test('data and local-fragment SVG references remain offline-safe',()=>{
+  const data=inspectSvgCompatibility('<svg><image href="data:image/png;base64,AA=="/></svg>');
+  assert.equal(data.externalRefs,false);
+  const fragment=inspectSvgCompatibility('<svg><defs><linearGradient id="g"/></defs><path fill="url(#g)" d="M0 0"/></svg>');
+  assert.equal(fragment.externalRefs,false);
+});
+
+test('style elements and scripts cannot enter direct-vector path',()=>{
+  const style=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><style>.x{fill:red}</style><path class="x" d="M0 0"/></svg>');
+  assert.equal(style.styleElementCount,1);
+  assert.equal(style.safeDirectVector,false);
+  assert.ok(style.fallbackReasons.includes('style-element'));
+
+  const script=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><script>alert(1)</script><path d="M0 0"/></svg>');
+  assert.equal(script.activeContent,true);
+  assert.equal(script.safeDirectVector,false);
+  assert.ok(script.fallbackReasons.includes('active-content'));
+});
