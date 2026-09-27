@@ -100,6 +100,16 @@ document.addEventListener('keydown',e=>{
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
 let autosaveTimer=null, autosaveErrorShown=false;
+function setAutosaveStatus(kind,text){
+  const el=document.getElementById('autosaveStatus'),label=document.getElementById('autosaveStatusText');
+  if(!el||!label) return;
+  el.className='autosave-status'+(kind?' '+kind:'');
+  label.textContent=text;
+}
+function savedTimeLabel(){
+  const d=new Date();
+  return 'Kaydedildi '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
 function openAutosaveDb(){
   return new Promise((res,rej)=>{
     if(!('indexedDB' in window)) return rej(new Error('IndexedDB yok'));
@@ -141,10 +151,16 @@ function autosavePayload(){
 }
 function scheduleAutosave(){
   clearTimeout(autosaveTimer);
+  setAutosaveStatus('saving','Değişiklik var');
   autosaveTimer=setTimeout(async()=>{
-    try{ await idbPut(autosavePayload()); }
-    catch(err){
+    setAutosaveStatus('saving','Kaydediliyor…');
+    try{
+      await idbPut(autosavePayload());
+      autosaveErrorShown=false;
+      setAutosaveStatus('saved',savedTimeLabel());
+    }catch(err){
       console.warn('Autosave failed',err);
+      setAutosaveStatus('error','Kayıt başarısız');
       if(!autosaveErrorShown){ autosaveErrorShown=true; showToast('Otomatik kayıt başarısız oldu — tarayıcı depolama alanını kontrol et','err'); }
     }
   },450);
@@ -202,7 +218,13 @@ async function readJsonEntry(entry,label,maxBytes=MAX_METADATA_BYTES){
   if(new TextEncoder().encode(text).length>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
   try{return JSON.parse(text);}catch(e){throw new Error(label+' geçerli JSON değil');}
 }
-const b64=s=>btoa(unescape(encodeURIComponent(s)));
+function b64(value){
+  const bytes=new TextEncoder().encode(String(value??''));
+  let binary='';
+  const CHUNK=0x8000;
+  for(let i=0;i<bytes.length;i+=CHUNK) binary+=String.fromCharCode(...bytes.subarray(i,i+CHUNK));
+  return btoa(binary);
+}
 function readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
 function readAsText(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsText(f);});}
 function loadImage(src){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=src;});}
@@ -251,70 +273,11 @@ function scalePathData(d, sx, sy){
   return out;
 }
 
-/* ── Aynı renkteki path'leri compound path'e birleştir ────────────────────
-   Fill bucket aracının çalışabilmesi için kritik:
-   • Her benzersiz renk → tek bir <path> olur (nonzero fill, delik oluşmaz)
-   • Path sayısı (1569 → renk sayısı kadar ~50) düşer
-   • Aynı renk tüm bölgeler tek tıkla değişir
-   • fill="none" ve fill="url(...)" path'leri korunur, en üste alınır
-   Not: Aynı renkteki path'ler farklı z-sırasındaysa görsel katmanlama
-        değişebilir; basit flat-design karakterlerde sorun çıkmaz.       */
-function mergePathsByColor(svgEl){
-  const NS='http://www.w3.org/2000/svg';
-  const allPaths=[...svgEl.querySelectorAll('path')];
-  if(allPaths.length<2) return;
-
-  /* Sadece ART ARDA (consecutive) gelen aynı renk path'leri birleştir.
-     Araya farklı renk girince yeni "run" başlar — z-order korunur.
-     Örnek:  beyaz(göz) · siyah(pupil) · beyaz(highlight)
-             → 3 ayrı path kalır, highlight siyah pupil'in üstünde ✓  */
-  const runs=[];  // [{fill, key, ds, attrs(nofill için)}]
-
-  for(const p of allPaths){
-    const raw=(p.getAttribute('fill')||'').trim();
-    const key=raw.toLowerCase();
-    const d=p.getAttribute('d')||'';
-
-    const isMergeable = key && key!=='none' && !key.startsWith('url') &&
-                        key!=='inherit' && key!=='currentcolor';
-
-    const last=runs[runs.length-1];
-    if(isMergeable && last && last.key===key){
-      // Önceki run ile aynı renk → birleştir
-      if(d) last.ds.push(d);
-    } else {
-      // Yeni run
-      runs.push(isMergeable
-        ? {fill:raw, key, ds: d?[d]:[]}
-        : {fill:raw, key:'__nofill__', ds: d?[d]:[], attrs:[...p.attributes]});
-    }
-    p.remove();
-  }
-
-  // Boş <g> elementlerini temizle
-  svgEl.querySelectorAll('g').forEach(g=>{ if(!g.children.length) g.remove(); });
-
-  // Run'ları sırasıyla ekle (z-order tamamen korunur)
-  for(const run of runs){
-    if(!run.ds.length) continue;
-    const p=document.createElementNS(NS,'path');
-    if(run.key==='__nofill__'){
-      run.attrs.forEach(a=>p.setAttribute(a.name,a.value));
-      p.setAttribute('d',run.ds[0]);
-    } else {
-      p.setAttribute('fill',run.fill);
-      p.setAttribute('d',run.ds.join(' '));
-    }
-    svgEl.appendChild(p);
-  }
-}
-
 /* ── SVG normalizer (paint editörü tam uyumlu çıktı) ──────────────────────
    Önceki sürümden fark:
    • <g transform="scale(...)"> YOK — koordinatlar doğrudan ölçeklenir
    • style="fill:..." → fill="..." dönüşümü
    • <circle> ve <polygon> → <path>
-   • Aynı renk path'ler compound path'te birleştirilir (fill bucket çalışır)
    • Whitespace text node'ları kaldırılır (e.getAttribute hatası önlenir)
    • ScratchJr yorumu \n öneki olmadan eklenir                            */
 function normalizeSvgForChar(svgText, pxW, pxH){
@@ -630,7 +593,7 @@ function setTab(name){
     t.setAttribute('aria-selected',active?'true':'false');
   });
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
-  if(name==='stage'){ render(); }
+  if(name==='stage'){ renderWorkspace(); }
   if(name==='bg'){ renderBgTab(); }
 }
 
@@ -647,7 +610,14 @@ function syncConv(){
 }
 
 /* ---------- render ---------- */
-function render(){ renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons(); scheduleAutosave(); }
+function render(opts={}){
+  renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
+  if(opts.autosave!==false) scheduleAutosave();
+}
+function renderWorkspace(opts={}){
+  if(opts.pages!==false) renderPages();
+  renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
+}
 function renderBadges(){
   document.getElementById('badgeChars').textContent=state.charLib.length;
   document.getElementById('badgeBg').textContent=state.bgLib.length;
@@ -687,7 +657,7 @@ function renderCharLib(){
     };
     const addBtn=document.createElement('div'); addBtn.className='add'; addBtn.textContent='+ Sahneye ekle';
     d.append(tag, ph, nm, addBtn);
-    const place=()=>{ checkpoint(); placeChar(it); setTab('stage'); render(); showToast(it.name+' sahneye eklendi'); };
+    const place=()=>{ checkpoint(); placeChar(it); setTab('stage'); scheduleAutosave(); showToast(it.name+' sahneye eklendi'); };
     d.onclick=place; d.tabIndex=0; d.setAttribute('role','button'); d.setAttribute('aria-label',it.name+' karakterini sahneye ekle');
     d.onkeydown=e=>{ if((e.key==='Enter'||e.key===' ')&&e.target===d){ e.preventDefault(); place(); } };
     const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',it.name+' karakterini kütüphaneden sil');
@@ -905,7 +875,7 @@ function renderPages(){
       state.pages.splice(i,1); state.current=Math.max(0,Math.min(state.current,state.pages.length-1)); state.selected=null; state.selectedText=null; render();
     };
     thumb.append(img,num,del);
-    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; render(); };
+    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; renderWorkspace(); renderBgTab(); };
     thumb.onclick=selectPage; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label','Sayfa '+(i+1)+' seç');
     thumb.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===thumb){e.preventDefault();selectPage();}};
     row.append(acts,thumb);
@@ -2316,7 +2286,8 @@ stageEl.addEventListener('pointerdown',e=>{ if(e.target===stageEl||e.target.clas
 async function boot(){
   initGridLabels(); syncConv();
   const restored=await restoreAutosave();
-  render();
+  render({autosave:false});
+  setAutosaveStatus('saved',restored?'Otomatik kayıt yüklendi':'Hazır');
   if(restored) showToast('Otomatik kaydedilen çalışma geri yüklendi');
 }
 boot();
