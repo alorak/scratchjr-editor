@@ -960,10 +960,10 @@ function renderPages(){
     // Action buttons (left of thumbnail)
     const acts=document.createElement('div'); acts.className='page-actions';
     const bgBtn=document.createElement('button'); bgBtn.className='page-act-btn'; bgBtn.title='Arkaplan seç';
-    bgBtn.textContent='🎨';
+    bgBtn.dataset.pageBg=String(i); bgBtn.textContent='🎨';
     bgBtn.onclick=ev=>{ ev.stopPropagation(); openBgPick(i); };
     const charBtn=document.createElement('button'); charBtn.className='page-act-btn char-btn'; charBtn.title='Karakter ekle';
-    charBtn.textContent='+';
+    charBtn.dataset.pageChar=String(i); charBtn.textContent='+';
     charBtn.onclick=ev=>{ ev.stopPropagation(); openCharPick(i); };
     acts.append(bgBtn,charBtn);
     // Thumbnail
@@ -1861,7 +1861,10 @@ async function exportSRJ(pagesArg){
     data.thumbnail={pagecount:pages.length,md5:firstThumb}; data.json=jsonObj;
     root.file('data.json', JSON.stringify(data));
     op.update(90,'Arşiv sıkıştırılıyor…');
-    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
+    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'},meta=>{
+      const pct=90+Math.round(Math.max(0,Math.min(100,meta.percent||0))*0.08);
+      op.update(pct,'Arşiv sıkıştırılıyor… '+Math.round(meta.percent||0)+'%');
+    });
     op.update(98,'İndirme hazırlanıyor…');
     const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=safe+'.sjr';
@@ -2221,14 +2224,13 @@ function confirmModal(opts){
     function close(val){
       hideDialog(ov);
       okBtn.removeEventListener('click',onOk); cancelBtn.removeEventListener('click',onCancel);
-      ov.removeEventListener('click',onBackdrop); document.removeEventListener('keydown',onKey);
+      ov.removeEventListener('click',onBackdrop);
       res(val);
     }
     const onOk=()=>close(true), onCancel=()=>close(false);
     const onBackdrop=e=>{ if(e.target===ov) close(false); };
-    const onKey=e=>{ if(e.key==='Enter'){e.preventDefault();close(true);} };
     okBtn.addEventListener('click',onOk); cancelBtn.addEventListener('click',onCancel);
-    ov.addEventListener('click',onBackdrop); document.addEventListener('keydown',onKey);
+    ov.addEventListener('click',onBackdrop);
     showDialog(ov,okBtn,()=>close(false));
   });
 }
@@ -2347,7 +2349,12 @@ function openBgPick(pageIdx){
   const overlay=document.getElementById('bgPickOverlay');
   showDialog(overlay,document.getElementById('bgPickClose'),closeBgPick);
 }
-function closeBgPick(){ hideDialog(document.getElementById('bgPickOverlay')); bgPickTarget=null; }
+function closeBgPick(){
+  const target=bgPickTarget;
+  hideDialog(document.getElementById('bgPickOverlay'));
+  bgPickTarget=null;
+  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-bg="'+target+'"]')?.focus());
+}
 function applyBgToPage(pageIdx,libItem){
   state.pages[pageIdx].bg={mode:'image',asset:libItem.asset,color:'#fff',bgId:libItem.id};
   if(pageIdx===state.current) renderStage();
@@ -2387,7 +2394,12 @@ function openCharPick(pageIdx){
   const overlay=document.getElementById('charPickOverlay');
   showDialog(overlay,document.getElementById('charPickClose'),closeCharPick);
 }
-function closeCharPick(){ hideDialog(document.getElementById('charPickOverlay')); charPickTarget=null; }
+function closeCharPick(){
+  const target=charPickTarget;
+  hideDialog(document.getElementById('charPickOverlay'));
+  charPickTarget=null;
+  if(target!==null) requestAnimationFrame(()=>document.querySelector('[data-page-char="'+target+'"]')?.focus());
+}
 function addCharToPage(pageIdx,libItem){
   const a=libItem.asset; const aspect=a.h/a.w;
   state.pages[pageIdx].chars.push({id:nextId(),libId:libItem.id,name:libItem.name,asset:a,fx:0.5,fy:0.5,sizePct:27,flip:false,aspect});
