@@ -444,3 +444,12 @@
 
   footer{padding:0 clamp(14px,3vw,34px) 40px;color:#a59ead;font-size:.78rem;line-height:1.5;max-width:920px}
   footer code{background:#fff;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:#6b6578}
+
+  .import-report-summary{margin:0 0 12px;font-weight:700;color:var(--ink);line-height:1.45}
+  .import-report-issues{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px;max-height:36vh;overflow:auto}
+  .import-issue{padding:8px 10px;border-radius:9px;font-size:.82rem;line-height:1.4;background:#f6f3ec;color:#5e5870}
+  .import-issue.ok{background:#eef8ea;color:#2e7a1e}
+  .import-issue.warning{background:#fff7e0;color:#7a5000}
+  .import-issue.missing{background:#fff2f2;color:#a02020}
+  .import-issue.skipped{background:#f7eefb;color:#70408e}
+  .import-report-modal .head .icon{font-size:1.25rem;color:#fff;background:linear-gradient(135deg,#5fc44d,#3fa531);transform:none}
