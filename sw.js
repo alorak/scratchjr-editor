@@ -11,14 +11,39 @@ const CORE=[
 ];
 
 self.addEventListener('install',event=>{
-  event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(CORE)).then(()=>self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE_NAME)
+      .then(cache=>cache.addAll(CORE))
+      .then(()=>self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate',event=>{
   event.waitUntil(
-    caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))).then(()=>self.clients.claim())
+    caches.keys()
+      .then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k))))
+      .then(()=>self.clients.claim())
   );
 });
+
+async function cacheSuccessful(request,response){
+  if(response&&response.status===200){
+    const cache=await caches.open(CACHE_NAME);
+    await cache.put(request,response.clone());
+  }
+  return response;
+}
+
+async function networkFirst(request,fallbackRequest=request){
+  try{
+    const response=await fetch(request);
+    return await cacheSuccessful(request,response);
+  }catch(err){
+    const cached=await caches.match(fallbackRequest);
+    if(cached) return cached;
+    throw err;
+  }
+}
 
 self.addEventListener('fetch',event=>{
   if(event.request.method!=='GET') return;
@@ -26,27 +51,12 @@ self.addEventListener('fetch',event=>{
   if(url.origin!==self.location.origin) return;
 
   if(event.request.mode==='navigate'){
-    event.respondWith(
-      fetch(event.request).then(response=>{
-        if(response&&response.status===200){
-          const copy=response.clone();
-          caches.open(CACHE_NAME).then(cache=>cache.put('./index.html',copy));
-        }
-        return response;
-      }).catch(()=>caches.match('./index.html'))
-    );
+    event.respondWith(networkFirst(event.request,'./index.html'));
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request).then(cached=>{
-      if(cached) return cached;
-      return fetch(event.request).then(response=>{
-        if(!response||response.status!==200) return response;
-        const copy=response.clone();
-        caches.open(CACHE_NAME).then(cache=>cache.put(event.request,copy));
-        return response;
-      });
-    })
-  );
+  // Online iken her zaman ağdaki güncel asset'i al ve cache'i yenile.
+  // Ağ yoksa son başarılı kopyaya dön. Böylece sabit cache adı yeni deployları
+  // süresiz olarak eski app.js/app.css ile kilitlemez.
+  event.respondWith(networkFirst(event.request));
 });
