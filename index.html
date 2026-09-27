@@ -437,6 +437,22 @@
   .modal .foot .btn{padding:11px 20px}
   .btn.danger{background:linear-gradient(135deg,#ef6f6a,#d94b45)}
 
+  :where(button,[role="button"],input,select):focus-visible{outline:3px solid #5a9fea;outline-offset:2px}
+  .history-btn{min-width:42px;padding:10px 12px}
+  @media (max-width:900px){
+    header.app{position:static}
+    .namewrap{order:3;flex:1 1 100%}
+    .namewrap input{width:100%}
+    .stage-layout{flex-wrap:wrap}
+    .sidebar-col{width:100%;order:2;flex-direction:row;align-items:flex-start}
+    .sel-sidebar,.text-sidebar{flex:1;min-width:0}
+    .stage-main{order:1;flex:1 1 calc(100% - 116px)}
+    .pages-col{order:1;width:100px}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  }
+
   footer{padding:0 clamp(14px,3vw,34px) 40px;color:#a59ead;font-size:.78rem;line-height:1.5;max-width:920px}
   footer code{background:#fff;border:1px solid var(--line);border-radius:6px;padding:1px 6px;color:#6b6578}
 </style>
@@ -450,17 +466,19 @@
     </div>
     <h1>SJR Atölyesi</h1>
   </div>
-  <nav class="tabbar" id="tabbar">
-    <button class="tab active" data-tab="chars"><span class="ic" style="background:var(--purple)"></span>Karakterler <span class="badge" id="badgeChars">0</span></button>
-    <button class="tab" data-tab="bg"><span class="ic" style="background:var(--blue)"></span>Arkaplanlar <span class="badge" id="badgeBg">0</span></button>
-    <button class="tab" data-tab="sounds"><span class="ic" style="background:var(--green)"></span>Sesler <span class="badge" id="badgeSnd">0</span></button>
-    <button class="tab" data-tab="stage"><span class="ic" style="background:var(--yellow)"></span>Sahne</button>
+  <nav class="tabbar" id="tabbar" role="tablist" aria-label="Proje bölümleri">
+    <button class="tab active" role="tab" aria-selected="true" data-tab="chars"><span class="ic" style="background:var(--purple)"></span>Karakterler <span class="badge" id="badgeChars">0</span></button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="bg"><span class="ic" style="background:var(--blue)"></span>Arkaplanlar <span class="badge" id="badgeBg">0</span></button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="sounds"><span class="ic" style="background:var(--green)"></span>Sesler <span class="badge" id="badgeSnd">0</span></button>
+    <button class="tab" role="tab" aria-selected="false" data-tab="stage"><span class="ic" style="background:var(--yellow)"></span>Sahne</button>
   </nav>
   <div class="grow"></div>
   <div class="namewrap">
     <label for="pname">Proje adı</label>
     <input id="pname" value="Benim Projem" maxlength="40" spellcheck="false">
   </div>
+  <button class="btn ghost history-btn" id="undoBtn" title="Geri al (Ctrl/⌘+Z)" aria-label="Geri al" disabled>↶</button>
+  <button class="btn ghost history-btn" id="redoBtn" title="Yinele (Ctrl/⌘+Shift+Z)" aria-label="Yinele" disabled>↷</button>
   <button class="btn import" id="importBtn">⬆ İçe Aktar</button>
   <input type="file" id="srjFile" accept=".sjr,.srj" hidden>
   <button class="btn export" id="exportBtn">⬇ İndir</button>
@@ -532,7 +550,7 @@
   </section>
 
   <!-- Ses Kayıt Modalı -->
-  <div class="srec-overlay" id="srecOverlay">
+  <div class="srec-overlay" id="srecOverlay" role="dialog" aria-modal="true" aria-labelledby="srecTitle">
     <div class="srec-modal">
       <div class="srec-header">
         <h3 class="srec-title">
@@ -631,7 +649,7 @@
 
 
 <!-- SVG INFO MODAL -->
-<div class="info-overlay" id="infoOverlay">
+<div class="info-overlay" id="infoOverlay" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
   <div class="info-modal">
     <div class="head">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#fff" stroke-width="2"/><line x1="12" y1="8" x2="12" y2="8.5" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><line x1="12" y1="11" x2="12" y2="16" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
@@ -665,7 +683,7 @@
 </div>
 
 <!-- BG PICKER MODAL -->
-<div class="pick-overlay" id="bgPickOverlay">
+<div class="pick-overlay" id="bgPickOverlay" role="dialog" aria-modal="true" aria-labelledby="bgPickTitle">
   <div class="pick-modal">
     <div class="pick-head">
       <h3 id="bgPickTitle">Arkaplan Seç</h3>
@@ -683,7 +701,7 @@
 </div>
 
 <!-- CHAR PICKER MODAL -->
-<div class="pick-overlay" id="charPickOverlay">
+<div class="pick-overlay" id="charPickOverlay" role="dialog" aria-modal="true" aria-labelledby="charPickTitle">
   <div class="pick-modal">
     <div class="pick-head">
       <h3 id="charPickTitle">Karakter Ekle</h3>
@@ -696,11 +714,11 @@
   </div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
 <script>
 "use strict";
-const STAGE_W=480, STAGE_H=360;
+const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
 // ScratchJr varsayılan scale=0.5'te karakter sahnenin ~%27'sini kaplasın:
 // CHAR_CANONICAL_W * 0.5 = STAGE_W * 0.27  →  259 px
 const CHAR_CANONICAL_W = Math.round(STAGE_W * 27 / 50);
@@ -716,6 +734,146 @@ function newPage(){ return { chars:[], texts:[], bg:{ mode:'color', color:'#eaf4
 let uid=1; const nextId=()=>'i'+(uid++);
 let conv={ mode:'embed', colors:16 };
 const cloneJson=v=>v==null?v:JSON.parse(JSON.stringify(v));
+
+/* ---------- undo / redo ---------- */
+const historyState={undo:[],redo:[],restoring:false};
+const HISTORY_LIMIT=50;
+function clonePageState(p){
+  return {
+    ...p,
+    sjrMeta:cloneJson(p.sjrMeta),
+    bg:{...p.bg},
+    chars:p.chars.map(x=>({...x,sjrMeta:cloneJson(x.sjrMeta)})),
+    texts:(p.texts||[]).map(x=>({...x,sjrMeta:cloneJson(x.sjrMeta)}))
+  };
+}
+function snapshotState(){
+  return {
+    pages:state.pages.map(clonePageState),
+    current:state.current,
+    charLib:state.charLib.map(x=>({...x})),
+    bgLib:state.bgLib.map(x=>({...x})),
+    sounds:state.sounds.map(x=>({...x})),
+    selected:state.selected, selectedText:state.selectedText,
+    projectName:document.getElementById('pname').value
+  };
+}
+function updateHistoryButtons(){
+  document.getElementById('undoBtn').disabled=!historyState.undo.length;
+  document.getElementById('redoBtn').disabled=!historyState.redo.length;
+}
+function checkpoint(){
+  if(historyState.restoring) return;
+  historyState.undo.push(snapshotState());
+  if(historyState.undo.length>HISTORY_LIMIT) historyState.undo.shift();
+  historyState.redo.length=0;
+  updateHistoryButtons();
+}
+function restoreSnapshot(s){
+  historyState.restoring=true;
+  Object.assign(state,{
+    pages:s.pages.map(clonePageState), current:s.current,
+    charLib:s.charLib.map(x=>({...x})), bgLib:s.bgLib.map(x=>({...x})),
+    sounds:s.sounds.map(x=>({...x})), selected:s.selected, selectedText:s.selectedText
+  });
+  document.getElementById('pname').value=s.projectName||'Benim Projem';
+  historyState.restoring=false;
+  render();
+}
+function undo(){
+  if(!historyState.undo.length) return;
+  const prev=historyState.undo.pop();
+  historyState.redo.push(snapshotState());
+  restoreSnapshot(prev); updateHistoryButtons(); showToast('Geri alındı');
+}
+function redo(){
+  if(!historyState.redo.length) return;
+  const next=historyState.redo.pop();
+  historyState.undo.push(snapshotState());
+  restoreSnapshot(next); updateHistoryButtons(); showToast('Yinelendi');
+}
+document.getElementById('undoBtn').onclick=undo;
+document.getElementById('redoBtn').onclick=redo;
+document.addEventListener('keydown',e=>{
+  const tag=(e.target&&e.target.tagName||'').toLowerCase();
+  if(['input','textarea','select'].includes(tag)||e.target?.isContentEditable) return;
+  const mod=e.ctrlKey||e.metaKey;
+  if(mod&&e.key.toLowerCase()==='z'){
+    e.preventDefault(); if(e.shiftKey) redo(); else undo();
+  } else if(mod&&e.key.toLowerCase()==='y'){
+    e.preventDefault(); redo();
+  }
+});
+
+/* ---------- autosave (IndexedDB) ---------- */
+const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
+let autosaveTimer=null;
+function openAutosaveDb(){
+  return new Promise((res,rej)=>{
+    if(!('indexedDB' in window)) return rej(new Error('IndexedDB yok'));
+    const req=indexedDB.open(AUTOSAVE_DB,1);
+    req.onupgradeneeded=()=>{ if(!req.result.objectStoreNames.contains(AUTOSAVE_STORE)) req.result.createObjectStore(AUTOSAVE_STORE); };
+    req.onsuccess=()=>res(req.result); req.onerror=()=>rej(req.error);
+  });
+}
+async function idbPut(value){
+  const db=await openAutosaveDb();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction(AUTOSAVE_STORE,'readwrite');
+    tx.objectStore(AUTOSAVE_STORE).put(value,AUTOSAVE_KEY);
+    tx.oncomplete=()=>{db.close();res();}; tx.onerror=()=>{db.close();rej(tx.error);};
+  });
+}
+async function idbGet(){
+  const db=await openAutosaveDb();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction(AUTOSAVE_STORE,'readonly'), req=tx.objectStore(AUTOSAVE_STORE).get(AUTOSAVE_KEY);
+    req.onsuccess=()=>{const v=req.result;db.close();res(v);}; req.onerror=()=>{db.close();rej(req.error);};
+  });
+}
+function plainAsset(a){ if(!a)return null; const {img,...rest}=a; return rest; }
+function autosavePayload(){
+  return {
+    version:1, projectName:document.getElementById('pname').value, current:state.current,
+    charLib:state.charLib.map(x=>({...x,asset:plainAsset(x.asset)})),
+    bgLib:state.bgLib.map(x=>({...x,asset:plainAsset(x.asset)})),
+    sounds:state.sounds.map(s=>{const {_waveData,_duration,...rest}=s;return rest;}),
+    pages:state.pages.map(p=>({
+      ...p, sjrMeta:cloneJson(p.sjrMeta),
+      bg:{...p.bg,asset:null},
+      chars:p.chars.map(x=>({...x,asset:null,sjrMeta:cloneJson(x.sjrMeta)})),
+      texts:(p.texts||[]).map(x=>({...x,sjrMeta:cloneJson(x.sjrMeta)}))
+    }))
+  };
+}
+function scheduleAutosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer=setTimeout(()=>idbPut(autosavePayload()).catch(()=>{}),450);
+}
+async function hydrateStoredAsset(a){
+  if(!a) return null;
+  const asset={...a};
+  asset.img=await loadImage(asset.dataURL).catch(()=>new Image());
+  return asset;
+}
+async function restoreAutosave(){
+  let saved=null; try{saved=await idbGet();}catch(e){return false;}
+  if(!saved||saved.version!==1||!Array.isArray(saved.pages)||!saved.pages.length) return false;
+  const charLib=[];
+  for(const x of (saved.charLib||[])) charLib.push({...x,asset:await hydrateStoredAsset(x.asset)});
+  const bgLib=[];
+  for(const x of (saved.bgLib||[])) bgLib.push({...x,asset:await hydrateStoredAsset(x.asset)});
+  const charMap=new Map(charLib.map(x=>[x.id,x.asset])), bgMap=new Map(bgLib.map(x=>[x.id,x.asset]));
+  const pages=saved.pages.slice(0,MAX_PAGES).map(p=>({
+    ...p,
+    bg:{...p.bg,asset:p.bg&&p.bg.bgId?bgMap.get(p.bg.bgId)||null:null},
+    chars:(p.chars||[]).map(x=>({...x,asset:charMap.get(x.libId)||null})).filter(x=>x.asset),
+    texts:(p.texts||[])
+  }));
+  Object.assign(state,{pages,current:Math.max(0,Math.min(saved.current||0,pages.length-1)),charLib,bgLib,sounds:saved.sounds||[],selected:null,selectedText:null});
+  document.getElementById('pname').value=saved.projectName||'Benim Projem';
+  return true;
+}
 
 /* ---------- dosya okuma ---------- */
 const b64=s=>btoa(unescape(encodeURIComponent(s)));
