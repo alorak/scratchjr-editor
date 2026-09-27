@@ -1,0 +1,64 @@
+{
+  "_fixtureSource": {
+    "description": "Real-world ScratchJr metadata shape adapted from public ScratchJr file-format documentation and sample-project repositories.",
+    "project": "Animal Race-style one-page project"
+  },
+  "gallery": "samples",
+  "version": "iOSv01",
+  "thumbnail": {"pagecount": 1, "md5": "thumbnails/page1.png"},
+  "ctime": "2016-01-15 19:54:45",
+  "deleted": "NO",
+  "mtime": "1452887756770",
+  "name": "Animal Race Fixture",
+  "id": "5",
+  "json": {
+    "currentPage": "page 1",
+    "pages": ["page 1"],
+    "page 1": {
+      "textstartat": 84.6,
+      "md5": "Farm.svg",
+      "num": 1,
+      "lastSprite": "Horse 1",
+      "sprites": ["Horse 1", "Text 1"],
+      "layers": ["Text 1", "Horse 1"],
+      "Horse 1": {
+        "id": "Horse 1",
+        "md5": "Horse.svg",
+        "name": "key_farm_horse",
+        "type": "sprite",
+        "homeflip": true,
+        "flip": true,
+        "shown": true,
+        "homeshown": true,
+        "homescale": 0.3,
+        "defaultScale": 0.5,
+        "speed": 2,
+        "scale": 0.3,
+        "angle": 0,
+        "w": 422,
+        "h": 417,
+        "cx": 208,
+        "cy": 211,
+        "xcoor": 335,
+        "ycoor": 195,
+        "homex": 335,
+        "homey": 195,
+        "sounds": ["pop.mp3", "horse.wav"],
+        "scripts": [
+          [["onclick", "null", 225, 33], ["playusersnd", 1, 298, 33]],
+          [["onclick", "null", 439, 36], ["repeat", 2, 512, 20, [["right", 1, 547, 36], ["left", 2, 612, 36], ["right", 1, 677, 36]]]]
+        ]
+      },
+      "Text 1": {
+        "id": "Text 1",
+        "type": "text",
+        "str": "Go!",
+        "color": "#1a1a1a",
+        "fontsize": 22,
+        "xcoor": 240,
+        "ycoor": 45,
+        "shown": true
+      }
+    }
+  }
+}

@@ -453,3 +453,13 @@
   .import-issue.missing{background:#fff2f2;color:#a02020}
   .import-issue.skipped{background:#f7eefb;color:#70408e}
   .import-report-modal .head .icon{font-size:1.25rem;color:#fff;background:linear-gradient(135deg,#5fc44d,#3fa531);transform:none}
+
+  .autosave-status{display:inline-flex;align-items:center;gap:6px;min-width:94px;padding:7px 9px;border:2px solid var(--line);border-radius:11px;background:#fff;color:#8a8398;font-size:.72rem;font-weight:700;white-space:nowrap}
+  .autosave-dot{width:7px;height:7px;border-radius:50%;background:#a9a4ae;flex:none}
+  .autosave-status.saving{color:#8b6713;background:#fff9e8;border-color:#ecd48f}
+  .autosave-status.saving .autosave-dot{background:#e4a91c}
+  .autosave-status.saved{color:#377a30;background:#f0f9ed;border-color:#c8e6c1}
+  .autosave-status.saved .autosave-dot{background:#56b947}
+  .autosave-status.error{color:#a53a36;background:#fff2f1;border-color:#efc3c0}
+  .autosave-status.error .autosave-dot{background:var(--red)}
+  @media (max-width:900px){.autosave-status{order:3;min-width:0}.history-btn{order:2}}

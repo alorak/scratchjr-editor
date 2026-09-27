@@ -175,3 +175,62 @@ test('minimal CI runs syntax checks and node tests',async()=>{
   assert.match(workflow,/actions\/setup-node@v4/);
   assert.match(workflow,/npm run ci/);
 });
+
+test('page thumbnails are cached and high-frequency updates are debounced',async()=>{
+  const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
+  assert.match(app,/const pageThumbCache=new WeakMap\(\)/);
+  assert.match(app,/function pageThumbSignature\(page\)/);
+  assert.match(app,/function getPageThumb\(page,w,h\)/);
+  assert.match(app,/function scheduleRenderPages\(delay=80\)/);
+  assert.match(app,/img\.src=getPageThumb\(p,92,69\)/);
+  assert.match(app,/scheduleRenderPages\(0\)/);
+  assert.match(index,/id="autosaveStatus"/);
+  assert.match(index,/id="autosaveStatusText"/);
+});
+
+test('stage navigation avoids rebuilding every library',()=>{
+  assert.match(app,/function renderWorkspace\(opts=\{\}\)/);
+  assert.match(app,/if\(name==='stage'\)\{ renderWorkspace\(\); \}/);
+  assert.doesNotMatch(app,/if\(name==='stage'\)\{ render\(\); \}/);
+});
+
+test('autosave status reflects saving saved and error states',()=>{
+  assert.match(app,/setAutosaveStatus\('saving','Değişiklik var'\)/);
+  assert.match(app,/setAutosaveStatus\('saving','Kaydediliyor…'\)/);
+  assert.match(app,/setAutosaveStatus\('saved',savedTimeLabel\(\)\)/);
+  assert.match(app,/setAutosaveStatus\('error','Kayıt başarısız'\)/);
+  assert.match(app,/render\(\{autosave:false\}\)/);
+});
+
+test('technical cleanup removes deprecated base64 and dead path merge code',()=>{
+  assert.match(app,/new TextEncoder\(\)\.encode/);
+  assert.doesNotMatch(app,/unescape\(encodeURIComponent/);
+  assert.doesNotMatch(app,/function mergePathsByColor/);
+  assert.doesNotMatch(app,/Aynı renk path'ler compound path/);
+});
+
+test('export thumbnail rejects null canvas blobs',()=>{
+  assert.match(app,/if\(!blob\) return rej\(new Error\('Thumbnail PNG oluşturulamadı'\)\)/);
+  assert.doesNotMatch(app,/toBlob\(b=>b\.arrayBuffer\(\)\.then\(res\)/);
+});
+
+test('real-world SJR archive test is part of npm test discovery',async()=>{
+  const pkg=JSON.parse(await readFile(new URL('../package.json',import.meta.url),'utf8'));
+  const archiveTest=await readFile(new URL('./sjr-archive-roundtrip.test.mjs',import.meta.url),'utf8');
+  assert.equal(pkg.scripts.test,'node --test tests/*.test.mjs');
+  assert.match(archiveTest,/public-animal-race-shape\.json/);
+  assert.match(archiveTest,/project\/data\.json/);
+  assert.match(archiveTest,/project\/characters\/Horse\.svg/);
+  assert.match(archiveTest,/project\/backgrounds\/Farm\.svg/);
+  assert.match(archiveTest,/project\/sounds\/horse\.wav/);
+});
+
+test('autosave generations prevent stale status updates',()=>{
+  assert.match(app,/autosaveGeneration=0/);
+  assert.match(app,/const generation=\+\+autosaveGeneration/);
+  assert.match(app,/if\(generation!==autosaveGeneration\) return/);
+});
+
+test('manual page renders cancel queued thumbnail work',()=>{
+  assert.match(app,/function renderPages\(\)\{\s*if\(renderPagesTimer\)\{clearTimeout\(renderPagesTimer\);renderPagesTimer=null;\}/);
+});

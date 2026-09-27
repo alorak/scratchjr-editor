@@ -99,7 +99,17 @@ document.addEventListener('keydown',e=>{
 
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
-let autosaveTimer=null, autosaveErrorShown=false;
+let autosaveTimer=null, autosaveErrorShown=false, autosaveGeneration=0;
+function setAutosaveStatus(kind,text){
+  const el=document.getElementById('autosaveStatus'),label=document.getElementById('autosaveStatusText');
+  if(!el||!label) return;
+  el.className='autosave-status'+(kind?' '+kind:'');
+  label.textContent=text;
+}
+function savedTimeLabel(){
+  const d=new Date();
+  return 'Kaydedildi '+String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+}
 function openAutosaveDb(){
   return new Promise((res,rej)=>{
     if(!('indexedDB' in window)) return rej(new Error('IndexedDB yok'));
@@ -141,10 +151,20 @@ function autosavePayload(){
 }
 function scheduleAutosave(){
   clearTimeout(autosaveTimer);
+  const generation=++autosaveGeneration;
+  setAutosaveStatus('saving','Değişiklik var');
   autosaveTimer=setTimeout(async()=>{
-    try{ await idbPut(autosavePayload()); }
-    catch(err){
+    if(generation!==autosaveGeneration) return;
+    setAutosaveStatus('saving','Kaydediliyor…');
+    try{
+      await idbPut(autosavePayload());
+      if(generation!==autosaveGeneration) return;
+      autosaveErrorShown=false;
+      setAutosaveStatus('saved',savedTimeLabel());
+    }catch(err){
       console.warn('Autosave failed',err);
+      if(generation!==autosaveGeneration) return;
+      setAutosaveStatus('error','Kayıt başarısız');
       if(!autosaveErrorShown){ autosaveErrorShown=true; showToast('Otomatik kayıt başarısız oldu — tarayıcı depolama alanını kontrol et','err'); }
     }
   },450);
@@ -202,7 +222,13 @@ async function readJsonEntry(entry,label,maxBytes=MAX_METADATA_BYTES){
   if(new TextEncoder().encode(text).length>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
   try{return JSON.parse(text);}catch(e){throw new Error(label+' geçerli JSON değil');}
 }
-const b64=s=>btoa(unescape(encodeURIComponent(s)));
+function b64(value){
+  const bytes=new TextEncoder().encode(String(value??''));
+  let binary='';
+  const CHUNK=0x8000;
+  for(let i=0;i<bytes.length;i+=CHUNK) binary+=String.fromCharCode(...bytes.subarray(i,i+CHUNK));
+  return btoa(binary);
+}
 function readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
 function readAsText(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsText(f);});}
 function loadImage(src){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=src;});}
@@ -251,70 +277,11 @@ function scalePathData(d, sx, sy){
   return out;
 }
 
-/* ── Aynı renkteki path'leri compound path'e birleştir ────────────────────
-   Fill bucket aracının çalışabilmesi için kritik:
-   • Her benzersiz renk → tek bir <path> olur (nonzero fill, delik oluşmaz)
-   • Path sayısı (1569 → renk sayısı kadar ~50) düşer
-   • Aynı renk tüm bölgeler tek tıkla değişir
-   • fill="none" ve fill="url(...)" path'leri korunur, en üste alınır
-   Not: Aynı renkteki path'ler farklı z-sırasındaysa görsel katmanlama
-        değişebilir; basit flat-design karakterlerde sorun çıkmaz.       */
-function mergePathsByColor(svgEl){
-  const NS='http://www.w3.org/2000/svg';
-  const allPaths=[...svgEl.querySelectorAll('path')];
-  if(allPaths.length<2) return;
-
-  /* Sadece ART ARDA (consecutive) gelen aynı renk path'leri birleştir.
-     Araya farklı renk girince yeni "run" başlar — z-order korunur.
-     Örnek:  beyaz(göz) · siyah(pupil) · beyaz(highlight)
-             → 3 ayrı path kalır, highlight siyah pupil'in üstünde ✓  */
-  const runs=[];  // [{fill, key, ds, attrs(nofill için)}]
-
-  for(const p of allPaths){
-    const raw=(p.getAttribute('fill')||'').trim();
-    const key=raw.toLowerCase();
-    const d=p.getAttribute('d')||'';
-
-    const isMergeable = key && key!=='none' && !key.startsWith('url') &&
-                        key!=='inherit' && key!=='currentcolor';
-
-    const last=runs[runs.length-1];
-    if(isMergeable && last && last.key===key){
-      // Önceki run ile aynı renk → birleştir
-      if(d) last.ds.push(d);
-    } else {
-      // Yeni run
-      runs.push(isMergeable
-        ? {fill:raw, key, ds: d?[d]:[]}
-        : {fill:raw, key:'__nofill__', ds: d?[d]:[], attrs:[...p.attributes]});
-    }
-    p.remove();
-  }
-
-  // Boş <g> elementlerini temizle
-  svgEl.querySelectorAll('g').forEach(g=>{ if(!g.children.length) g.remove(); });
-
-  // Run'ları sırasıyla ekle (z-order tamamen korunur)
-  for(const run of runs){
-    if(!run.ds.length) continue;
-    const p=document.createElementNS(NS,'path');
-    if(run.key==='__nofill__'){
-      run.attrs.forEach(a=>p.setAttribute(a.name,a.value));
-      p.setAttribute('d',run.ds[0]);
-    } else {
-      p.setAttribute('fill',run.fill);
-      p.setAttribute('d',run.ds.join(' '));
-    }
-    svgEl.appendChild(p);
-  }
-}
-
 /* ── SVG normalizer (paint editörü tam uyumlu çıktı) ──────────────────────
    Önceki sürümden fark:
    • <g transform="scale(...)"> YOK — koordinatlar doğrudan ölçeklenir
    • style="fill:..." → fill="..." dönüşümü
    • <circle> ve <polygon> → <path>
-   • Aynı renk path'ler compound path'te birleştirilir (fill bucket çalışır)
    • Whitespace text node'ları kaldırılır (e.getAttribute hatası önlenir)
    • ScratchJr yorumu \n öneki olmadan eklenir                            */
 function normalizeSvgForChar(svgText, pxW, pxH){
@@ -432,7 +399,7 @@ function normalizeSvgForChar(svgText, pxW, pxH){
   }catch(e){return null;}
 }
 
-/* ---------- ImageTracer (gerçek vektör) — tembel yükleme ---------- */
+/* ---------- ImageTracer (yerel gerçek-vektör dönüştürücü) ---------- */
 function loadTracer(){
   if(window.ImageTracer) return Promise.resolve();
   return Promise.reject(new Error('Yerel ImageTracer yüklenemedi'));
@@ -630,7 +597,7 @@ function setTab(name){
     t.setAttribute('aria-selected',active?'true':'false');
   });
   document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.tab===name));
-  if(name==='stage'){ render(); }
+  if(name==='stage'){ renderWorkspace(); }
   if(name==='bg'){ renderBgTab(); }
 }
 
@@ -647,7 +614,14 @@ function syncConv(){
 }
 
 /* ---------- render ---------- */
-function render(){ renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons(); scheduleAutosave(); }
+function render(opts={}){
+  renderBadges(); renderCharLib(); renderBgTab(); renderSounds(); renderPages(); renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
+  if(opts.autosave!==false) scheduleAutosave();
+}
+function renderWorkspace(opts={}){
+  if(opts.pages!==false) renderPages();
+  renderStage(); renderSelPanel(); renderTextPanel(); updateHistoryButtons();
+}
 function renderBadges(){
   document.getElementById('badgeChars').textContent=state.charLib.length;
   document.getElementById('badgeBg').textContent=state.bgLib.length;
@@ -680,6 +654,7 @@ function renderCharLib(){
         nm2.title='Yeniden adlandırmak için tıkla';
         nm2.onclick=editName;
         inp.replaceWith(nm2);
+        scheduleAutosave();
       }
       inp.onblur=saveName;
       inp.onkeydown=e=>{ if(e.key==='Enter') inp.blur(); if(e.key==='Escape'){ inp.value=it.name; inp.blur(); } };
@@ -687,7 +662,7 @@ function renderCharLib(){
     };
     const addBtn=document.createElement('div'); addBtn.className='add'; addBtn.textContent='+ Sahneye ekle';
     d.append(tag, ph, nm, addBtn);
-    const place=()=>{ checkpoint(); placeChar(it); setTab('stage'); render(); showToast(it.name+' sahneye eklendi'); };
+    const place=()=>{ checkpoint(); placeChar(it); setTab('stage'); scheduleAutosave(); showToast(it.name+' sahneye eklendi'); };
     d.onclick=place; d.tabIndex=0; d.setAttribute('role','button'); d.setAttribute('aria-label',it.name+' karakterini sahneye ekle');
     d.onkeydown=e=>{ if((e.key==='Enter'||e.key===' ')&&e.target===d){ e.preventDefault(); place(); } };
     const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',it.name+' karakterini kütüphaneden sil');
@@ -850,6 +825,31 @@ function drawWaveCanvas(s,cvs){
     ctx.moveTo(px,0); ctx.lineTo(px,44); ctx.stroke();
   }
 }
+const pageThumbCache=new WeakMap(),thumbAssetIds=new WeakMap();
+let thumbAssetSeq=1,renderPagesTimer=null;
+function thumbAssetId(asset){
+  if(!asset||typeof asset!=='object') return 'none';
+  if(!thumbAssetIds.has(asset)) thumbAssetIds.set(asset,'a'+thumbAssetSeq++);
+  return thumbAssetIds.get(asset);
+}
+function pageThumbSignature(page){
+  return JSON.stringify([
+    page.bg?.mode,page.bg?.color,page.bg?.bgId,thumbAssetId(page.bg?.asset),
+    (page.chars||[]).map(c=>[c.id,c.libId,thumbAssetId(c.asset),+Number(c.fx||0).toFixed(4),+Number(c.fy||0).toFixed(4),+Number(c.sizePct||0).toFixed(2),!!c.flip,+Number(c.aspect||1).toFixed(4)]),
+    (page.texts||[]).map(t=>[t.id,t.str,t.color,t.fontsize,+Number(t.fx||0).toFixed(4),+Number(t.fy||0).toFixed(4)])
+  ]);
+}
+function getPageThumb(page,w,h){
+  const signature=pageThumbSignature(page),cached=pageThumbCache.get(page);
+  if(cached&&cached.signature===signature&&cached.w===w&&cached.h===h) return cached.url;
+  const url=renderPageThumbSync(page,w,h);
+  pageThumbCache.set(page,{signature,w,h,url});
+  return url;
+}
+function scheduleRenderPages(delay=80){
+  clearTimeout(renderPagesTimer);
+  renderPagesTimer=setTimeout(()=>{renderPagesTimer=null;renderPages();},delay);
+}
 function renderPageThumbSync(page,w,h){
   const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
   const ctx=cv.getContext('2d');
@@ -873,6 +873,7 @@ function renderPageThumbSync(page,w,h){
   return cv.toDataURL('image/png');
 }
 function renderPages(){
+  if(renderPagesTimer){clearTimeout(renderPagesTimer);renderPagesTimer=null;}
   const panel=document.getElementById('pagesPanel'); panel.innerHTML='';
   state.pages.forEach((p,i)=>{
     const row=document.createElement('div'); row.className='page-row';
@@ -887,7 +888,7 @@ function renderPages(){
     acts.append(bgBtn,charBtn);
     // Thumbnail
     const thumb=document.createElement('div'); thumb.className='page-thumb'+(i===state.current?' active':'');
-    const img=document.createElement('img'); img.src=renderPageThumbSync(p,92,69); img.alt='Sayfa '+(i+1);
+    const img=document.createElement('img'); img.src=getPageThumb(p,92,69); img.alt='Sayfa '+(i+1);
     const num=document.createElement('span'); num.className='page-num'; num.textContent=i+1;
     const del=document.createElement('button'); del.className='page-del'; del.textContent='×'; del.title='Sayfayı sil';
     if(state.pages.length<=1) del.style.display='none';
@@ -905,7 +906,7 @@ function renderPages(){
       state.pages.splice(i,1); state.current=Math.max(0,Math.min(state.current,state.pages.length-1)); state.selected=null; state.selectedText=null; render();
     };
     thumb.append(img,num,del);
-    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; render(); };
+    const selectPage=()=>{ state.current=i; state.selected=null; state.selectedText=null; renderWorkspace(); renderBgTab(); };
     thumb.onclick=selectPage; thumb.tabIndex=0; thumb.setAttribute('role','button'); thumb.setAttribute('aria-label','Sayfa '+(i+1)+' seç');
     thumb.onkeydown=e=>{if((e.key==='Enter'||e.key===' ')&&e.target===thumb){e.preventDefault();selectPage();}};
     row.append(acts,thumb);
@@ -1051,7 +1052,7 @@ function attachDrag(el,c){
       el.style.top=(c.fy*rect.height-dispH/2)+'px';
       updateGridLabels();
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
     el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
@@ -1111,7 +1112,7 @@ function renderTextPanel(){
       sw.className='text-color-swatch'+(selHex===c?' active':'');
       sw.style.background=c; sw.title=c;
       sw.tabIndex=0; sw.setAttribute('role','button'); sw.setAttribute('aria-label','Yazı rengini '+c+' yap');
-      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();};
+      const setColor=()=>{checkpoint(); sel.color=c; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave();};
       sw.onclick=setColor; sw.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setColor();}};
       colorRow.appendChild(sw);
     });
@@ -1119,7 +1120,7 @@ function renderTextPanel(){
     custom.type='color'; custom.className='text-custom-color'; custom.title='Özel renk';
     custom.value=selHex;
     custom.onpointerdown=()=>checkpoint();
-    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave(); };
+    custom.oninput=e=>{ sel.color=e.target.value; renderTextPanel(); renderStage(); scheduleRenderPages(); scheduleAutosave(); };
     colorRow.appendChild(custom);
   } else {
     editPanel.style.display='none';
@@ -1142,7 +1143,7 @@ function attachTextDrag(el,t){
       el.style.left=(t.fx*rect.width)+'px';
       el.style.top=(t.fy*rect.height)+'px';
     };
-    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; renderPages(); scheduleAutosave(); };
+    const up=()=>{ el.removeEventListener('pointermove',move); el.removeEventListener('pointerup',up); el.removeEventListener('pointercancel',up); el.style.cursor='grab'; scheduleRenderPages(0); scheduleAutosave(); };
     el.addEventListener('pointermove',move); el.addEventListener('pointerup',up); el.addEventListener('pointercancel',up);
   });
 }
@@ -1153,7 +1154,7 @@ document.getElementById('textAddBtn').onclick=()=>{
   page.texts=page.texts||[];
   const t={id:nextId(),str:'Yazı',color:TEXT_COLORS[5],fontsize:16,fx:0.5,fy:0.5};
   page.texts.push(t); state.selectedText=t.id; state.selected=null;
-  renderTextPanel(); renderStage(); renderSelPanel(); renderPages();
+  renderTextPanel(); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
 };
 
 document.getElementById('textStrInput').addEventListener('focus',()=>checkpoint());
@@ -1164,20 +1165,20 @@ document.getElementById('textStrInput').addEventListener('input',e=>{
   if(tel) tel.textContent=t.str;
   const listEl=document.querySelector('#textItemList .text-item.sel .text-item-preview');
   if(listEl){ listEl.textContent=t.str||'(boş)'; listEl.style.color=t.color; }
-  renderPages(); scheduleAutosave();
+  scheduleRenderPages(); scheduleAutosave();
 });
 
 document.getElementById('textSizeDown').onclick=()=>{
   const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.max(8,t.fontsize-2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); renderPages(); scheduleAutosave();
+  renderStage(); scheduleRenderPages(); scheduleAutosave();
 };
 document.getElementById('textSizeUp').onclick=()=>{
   const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.min(96,t.fontsize+2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); renderPages(); scheduleAutosave();
+  renderStage(); scheduleRenderPages(); scheduleAutosave();
 };
 
 document.getElementById('textDelBtn').onclick=async()=>{
@@ -1191,11 +1192,11 @@ document.getElementById('textDelBtn').onclick=async()=>{
   checkpoint();
   const page=state.pages[state.current];
   page.texts=page.texts.filter(z=>z!==t);
-  state.selectedText=null; renderTextPanel(); renderStage(); renderPages();
+  state.selectedText=null; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();
 };
 
 /* ---------- kontroller ---------- */
-function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave(); }
+function changeSizePct(val){ const c=getSel(); if(!c)return; c.sizePct=Math.max(4,Math.min(100,val)); renderStage(); renderSelPanel(); scheduleRenderPages(); scheduleAutosave(); }
 document.getElementById('sizeDown').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct-5);} };
 document.getElementById('sizeUp').onclick=()=>{ const c=getSel(); if(c){checkpoint();changeSizePct(c.sizePct+5);} };
 document.getElementById('sizeRange').addEventListener('pointerdown',()=>{if(getSel())checkpoint();});
@@ -1211,7 +1212,7 @@ document.getElementById('delBtn').onclick=async()=>{
   if(!onay) return;
   checkpoint();
   const p=state.pages[state.current]; p.chars=p.chars.filter(z=>z!==c);
-  state.selected=null; renderStage(); renderSelPanel(); renderPages();
+  state.selected=null; renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
 };
 
 /* ---------- yüklemeler ---------- */
@@ -1220,7 +1221,7 @@ document.getElementById('charFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
   if(files.length) checkpoint();
   for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Karakter dosyası'); const a=await fileToAsset(f); addCharToLib(a, baseName(f.name)); }catch(err){ console.error(err); showToast((err.message||'Okunamadı')+': '+f.name,'err'); } }
-  renderBadges(); renderCharLib(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
+  renderBadges(); renderCharLib(); scheduleAutosave(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
 });
 document.getElementById('bgUpload').onclick=()=>document.getElementById('bgFile').click();
 document.getElementById('bgFile').addEventListener('change',async e=>{
@@ -1230,7 +1231,7 @@ document.getElementById('bgFile').addEventListener('change',async e=>{
   renderBadges(); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan eklendi');
 });
 document.getElementById('bgColor').addEventListener('pointerdown',()=>checkpoint());
-document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); });
+document.getElementById('bgColor').addEventListener('input',e=>{ state.pages[state.current].bg={mode:'color',color:e.target.value,asset:null,bgId:null}; renderBgTab(); renderStage(); scheduleRenderPages(); scheduleAutosave(); });
 document.getElementById('bgClear').onclick=()=>{ checkpoint(); state.pages[state.current].bg={mode:'color',color:'#eaf4ff',asset:null,bgId:null}; renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); };
 
 document.getElementById('sndUpload').onclick=()=>document.getElementById('sndFile').click();
@@ -1658,13 +1659,16 @@ async function renderThumb(page){
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*STAGE_W,t.fy*STAGE_H);}catch(e){}
   }
-  return await new Promise(res=>cv.toBlob(b=>b.arrayBuffer().then(res),'image/png'));
+  return await new Promise((res,rej)=>cv.toBlob(blob=>{
+    if(!blob) return rej(new Error('Thumbnail PNG oluşturulamadı'));
+    blob.arrayBuffer().then(res,rej);
+  },'image/png'));
 }
 function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H,r=Math.max(W/iw,H/ih),dw=iw*r,dh=ih*r;
   try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch(e){} }
 
 async function exportSRJ(pagesArg){
-  if(typeof JSZip==='undefined') return showToast('Sıkıştırma kütüphanesi yüklenemedi (internet?)','err');
+  if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
   // Hiç sahneye eklenmemiş karakter uyarısı
   const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
@@ -1783,7 +1787,7 @@ async function exportSRJ(pagesArg){
 }
 document.getElementById('exportBtn').onclick=exportSRJ;
 
-/* ---------- içe aktarma (.srj) ---------- */
+/* ---------- içe aktarma (.sjr) ---------- */
 function svgImageHref(svgText){
   try{ const im=new DOMParser().parseFromString(svgText,'image/svg+xml').querySelector('image');
     if(!im) return null;
@@ -2238,7 +2242,7 @@ function openBgPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); };
+      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); scheduleAutosave(); };
       item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' arkaplanını seç');
       item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
@@ -2259,7 +2263,7 @@ document.getElementById('bgPickColor').addEventListener('input',e=>{
   if(bgPickTarget===null) return;
   state.pages[bgPickTarget].bg={mode:'color',color:e.target.value,asset:null,bgId:null};
   if(bgPickTarget===state.current) renderStage();
-  renderPages(); renderBgTab();
+  scheduleRenderPages(); renderBgTab(); scheduleAutosave();
 });
 
 /* ---------- karakter picker ---------- */
@@ -2277,7 +2281,7 @@ function openCharPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); };
+      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); scheduleAutosave(); };
       item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' karakterini ekle');
       item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
@@ -2311,12 +2315,13 @@ function showToast(msg,kind){ const t=document.getElementById('toast'); t.textCo
 
 /* ---------- başlat ---------- */
 document.getElementById('pname').addEventListener('input',scheduleAutosave);
-window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); renderPages(); } });
+window.addEventListener('resize',()=>{ if(document.querySelector('.panel[data-tab=stage]').classList.contains('active')){ renderStage(); scheduleRenderPages(60); } });
 stageEl.addEventListener('pointerdown',e=>{ if(e.target===stageEl||e.target.classList.contains('grid')||e.target.classList.contains('bgimg')){ state.selected=null; state.selectedText=null; renderStage(); renderSelPanel(); renderTextPanel(); }});
 async function boot(){
   initGridLabels(); syncConv();
   const restored=await restoreAutosave();
-  render();
+  render({autosave:false});
+  setAutosaveStatus('saved',restored?'Otomatik kayıt yüklendi':'Hazır');
   if(restored) showToast('Otomatik kaydedilen çalışma geri yüklendi');
 }
 boot();
