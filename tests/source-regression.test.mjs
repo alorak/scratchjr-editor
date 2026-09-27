@@ -104,7 +104,7 @@ test('backgrounds share the same complex-SVG fallback policy',()=>{
 });
 
 test('ImageTracer output re-enters SVG policy and normalization',()=>{
-  assert.match(app,/const tracedPolicy=inspectSvgCompatibility\(traced\)/);
+  assert.match(pipeline,/policy=inspectSvgCompatibility\(traced\)/);
   assert.match(pipeline,/normalizeSvgForChar\(traced/);
   assert.match(pipeline,/normalizeSvgForBackground\(traced\)/);
 });
@@ -212,11 +212,12 @@ test('autosave status reflects saving saved and error states',()=>{
   assert.match(app,/render\(\{autosave:false\}\)/);
 });
 
-test('technical cleanup removes deprecated base64 and dead path merge code',()=>{
-  assert.match(app,/new TextEncoder\(\)\.encode/);
-  assert.doesNotMatch(app,/unescape\(encodeURIComponent/);
-  assert.doesNotMatch(app,/function mergePathsByColor/);
-  assert.doesNotMatch(app,/Aynı renk path'ler compound path/);
+test('technical cleanup removes deprecated base64 and dead path merge code',async()=>{
+  const fileUtils=await readFile(new URL('../file-utils.mjs',import.meta.url),'utf8');
+  assert.match(fileUtils,/new TextEncoder\(\)\.encode/);
+  assert.doesNotMatch(fileUtils,/unescape\(encodeURIComponent/);
+  assert.doesNotMatch(pipeline,/function mergePathsByColor/);
+  assert.doesNotMatch(pipeline,/Aynı renk path'ler compound path/);
 });
 
 test('export thumbnail rejects null canvas blobs',()=>{
