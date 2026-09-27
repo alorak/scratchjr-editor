@@ -650,6 +650,7 @@ function renderCharLib(){
         nm2.title='Yeniden adlandırmak için tıkla';
         nm2.onclick=editName;
         inp.replaceWith(nm2);
+        scheduleAutosave();
       }
       inp.onblur=saveName;
       inp.onkeydown=e=>{ if(e.key==='Enter') inp.blur(); if(e.key==='Escape'){ inp.value=it.name; inp.blur(); } };
@@ -1148,7 +1149,7 @@ document.getElementById('textAddBtn').onclick=()=>{
   page.texts=page.texts||[];
   const t={id:nextId(),str:'Yazı',color:TEXT_COLORS[5],fontsize:16,fx:0.5,fy:0.5};
   page.texts.push(t); state.selectedText=t.id; state.selected=null;
-  renderTextPanel(); renderStage(); renderSelPanel(); renderPages();
+  renderTextPanel(); renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
 };
 
 document.getElementById('textStrInput').addEventListener('focus',()=>checkpoint());
@@ -1186,7 +1187,7 @@ document.getElementById('textDelBtn').onclick=async()=>{
   checkpoint();
   const page=state.pages[state.current];
   page.texts=page.texts.filter(z=>z!==t);
-  state.selectedText=null; renderTextPanel(); renderStage(); renderPages();
+  state.selectedText=null; renderTextPanel(); renderStage(); renderPages(); scheduleAutosave();
 };
 
 /* ---------- kontroller ---------- */
@@ -1206,7 +1207,7 @@ document.getElementById('delBtn').onclick=async()=>{
   if(!onay) return;
   checkpoint();
   const p=state.pages[state.current]; p.chars=p.chars.filter(z=>z!==c);
-  state.selected=null; renderStage(); renderSelPanel(); renderPages();
+  state.selected=null; renderStage(); renderSelPanel(); renderPages(); scheduleAutosave();
 };
 
 /* ---------- yüklemeler ---------- */
@@ -1215,7 +1216,7 @@ document.getElementById('charFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
   if(files.length) checkpoint();
   for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Karakter dosyası'); const a=await fileToAsset(f); addCharToLib(a, baseName(f.name)); }catch(err){ console.error(err); showToast((err.message||'Okunamadı')+': '+f.name,'err'); } }
-  renderBadges(); renderCharLib(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
+  renderBadges(); renderCharLib(); scheduleAutosave(); showToast(files.length>1?files.length+' karakter eklendi':'Karakter kütüphaneye eklendi');
 });
 document.getElementById('bgUpload').onclick=()=>document.getElementById('bgFile').click();
 document.getElementById('bgFile').addEventListener('change',async e=>{
@@ -2236,7 +2237,7 @@ function openBgPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); };
+      const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); scheduleAutosave(); };
       item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' arkaplanını seç');
       item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
@@ -2257,7 +2258,7 @@ document.getElementById('bgPickColor').addEventListener('input',e=>{
   if(bgPickTarget===null) return;
   state.pages[bgPickTarget].bg={mode:'color',color:e.target.value,asset:null,bgId:null};
   if(bgPickTarget===state.current) renderStage();
-  renderPages(); renderBgTab();
+  scheduleRenderPages(); renderBgTab(); scheduleAutosave();
 });
 
 /* ---------- karakter picker ---------- */
@@ -2275,7 +2276,7 @@ function openCharPick(pageIdx){
       const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
-      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); };
+      const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); scheduleAutosave(); };
       item.onclick=choose; item.tabIndex=0; item.setAttribute('role','button'); item.setAttribute('aria-label',it.name+' karakterini ekle');
       item.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose();}};
       grid.appendChild(item);
