@@ -2350,5 +2350,6 @@ async function boot(){
   render({autosave:false});
   setAutosaveStatus('saved',restored?'Otomatik kayıt yüklendi':'Hazır');
   if(restored) showToast('Otomatik kaydedilen çalışma geri yüklendi');
+  document.documentElement.dataset.appReady='true';
 }
 boot();
