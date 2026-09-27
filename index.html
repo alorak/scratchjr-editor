@@ -712,9 +712,10 @@ const state={
   selected:null,
   selectedText:null,
 };
-function newPage(){ return { chars:[], texts:[], bg:{ mode:'color', color:'#eaf4ff', asset:null, bgId:null } }; }
+function newPage(){ return { chars:[], texts:[], bg:{ mode:'color', color:'#eaf4ff', asset:null, bgId:null }, sjrMeta:null }; }
 let uid=1; const nextId=()=>'i'+(uid++);
 let conv={ mode:'embed', colors:16 };
+const cloneJson=v=>v==null?v:JSON.parse(JSON.stringify(v));
 
 /* ---------- dosya okuma ---------- */
 const b64=s=>btoa(unescape(encodeURIComponent(s)));
@@ -922,19 +923,10 @@ function normalizeSvgForChar(svgText, pxW, pxH){
       if(d) el.setAttribute('d', scalePathData(d,sx,sy));
     });
 
-    // ── 8b. Aynı renkteki path'leri compound path'e birleştir ────────────
-    mergePathsByColor(svgEl);
-
-    // ── 8c. Kontur çizgisi ekle (thumbnail görünürlüğü için) ─────────────
-    // ScratchJr'ın canvas renderer'ı stroke attribute'unu okuyor.
-    // Her path'e ince siyah stroke → 64px thumbnail'da şekiller belirginleşir.
-    // fill="none" path'leri (zaten kontur çizgisi olanlar) atlanır.
-    doc.querySelectorAll('path').forEach(el=>{
-      const fill=(el.getAttribute('fill')||'').toLowerCase();
-      if(fill==='none') return;
-      el.setAttribute('stroke','#1a1a1a');
-      el.setAttribute('stroke-width','0.5');
-    });
+    // ── 8b. Path/grup yapısını olduğu gibi koru ─────────────────────────
+    // Path'leri root'a taşıyıp birleştirmek parent style/opacity/stroke
+    // bilgisini kaybettirebiliyordu. Ayrıca kullanıcı çizimine yapay stroke
+    // eklemiyoruz; export edilen SVG'nin görsel semantiği korunur.
 
     // ── 9. SVG niteliklerini normalize et ───────────────────────────────
     [...svgEl.attributes].forEach(a=>{
@@ -1015,16 +1007,19 @@ async function fileToAsset(file){
     const w=img.naturalWidth||svgDims(text).w||150;
     const h=img.naturalHeight||svgDims(text).h||150;
 
-    // 1. Pure-path SVG (Inkscape <image> yok): normalize, canvas preview
+    // 1. Pure-path SVG: yalnızca transform içermeyen düz vektörleri normalize et.
+    // Transform'lu SVG'yi zorla flatten etmek görseli bozabildiği için aşağıdaki
+    // raster fallback yoluna bırakıyoruz; böylece görünüm kaybolmuyor.
     const hasEmbedded=/<image[\s/>]/i.test(text);
-    if(!hasEmbedded){
+    const hasTransforms=/\btransform\s*=/i.test(text);
+    if(!hasEmbedded && !hasTransforms){
       const norm=normalizeSvgForChar(text, w, h);
       if(norm){
-        const prev=await svgToPngPreview(svgDataURL, w, h);
-        // norm.w/h = viewBox[2,3] = SVG dosyasının width/height özelliği.
-        // data.json'daki w/h aynı değer → ScratchJr'da scale hesabı tutarlı. ✓
+        const normDataURL='data:image/svg+xml;base64,'+b64(norm.text);
+        const prev=await svgToPngPreview(normDataURL, norm.w, norm.h);
+        // Önizleme ve export aynı normalize edilmiş asset'i kullanır (WYSIWYG).
         return { isSvg:true, vector:true, svgText:norm.text,
-          dataURL:prev?prev.pngURL:svgDataURL, w:norm.w, h:norm.h, img:prev?prev.img:img };
+          dataURL:prev?prev.pngURL:normDataURL, w:norm.w, h:norm.h, img:prev?prev.img:await loadImage(normDataURL) };
       }
     }
 
@@ -2011,44 +2006,79 @@ async function exportSRJ(pagesArg){
     const name=(document.getElementById('pname').value||'Benim Projem').trim();
     const zip=new JSZip(); const root=zip.folder('project');
     const charsDir=root.folder('characters'), bgDir=root.folder('backgrounds'), thumbDir=root.folder('thumbnails');
-    let soundsDir=null; const soundFiles=[];
+    let soundsDir=null; const soundFiles=[]; const soundOutBySource=new Map(); const usedSoundNames=new Set();
     if(state.sounds.length){ soundsDir=root.folder('sounds');
-      for(const s of state.sounds){ const fn='SND'+md5buf(s.buf)+'.'+s.ext; soundsDir.file(fn,s.buf); soundFiles.push(fn); } }
+      for(const s of state.sounds){
+        let fn=s.sourceFile ? String(s.sourceFile).replace(/^.*[\\/]/,'') : '';
+        if(!fn || usedSoundNames.has(fn)) fn='SND'+md5buf(s.buf)+'.'+s.ext;
+        usedSoundNames.add(fn); soundsDir.file(fn,s.buf); soundFiles.push(fn);
+        if(s.sourceFile){
+          soundOutBySource.set(String(s.sourceFile),fn);
+          soundOutBySource.set(String(s.sourceFile).replace(/^.*[\\/]/,''),fn);
+        }
+      }
+    }
+    const mapSoundRef=ref=>{
+      const raw=String(ref||''), base=raw.replace(/^.*[\\/]/,'');
+      return soundOutBySource.get(raw)||soundOutBySource.get(base)||raw;
+    };
     const charCache=new Map();
     function charFile(asset){ if(charCache.has(asset.svgText))return charCache.get(asset.svgText);
       const fn=md5str(asset.svgText)+'.svg'; charsDir.file(fn,asset.svgText); charCache.set(asset.svgText,fn); return fn; }
     function coverSvg(asset){ return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><image width="${STAGE_W}" height="${STAGE_H}" preserveAspectRatio="xMidYMid slice" href="${asset.dataURL}" xlink:href="${asset.dataURL}"/></svg>`; }
+    function backgroundSvg(asset){ return asset&&asset.vector&&asset.svgText ? asset.svgText : coverSvg(asset); }
     function colorSvg(color){ return `<svg xmlns="http://www.w3.org/2000/svg" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><rect width="${STAGE_W}" height="${STAGE_H}" fill="${color}"/></svg>`; }
 
     const jsonObj={ pages:[], currentPage:'page 1' }; let firstThumb=null;
     for(let i=0;i<pages.length;i++){
       const page=pages[i], key='page '+(i+1); jsonObj.pages.push(key);
       let bgName;
-      if(page.bg.mode==='image'&&page.bg.asset){ const svg=coverSvg(page.bg.asset); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
+      if(page.bg.mode==='image'&&page.bg.asset){ const svg=backgroundSvg(page.bg.asset); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
       else { const svg=colorSvg(page.bg.color||'#ffffff'); bgName=md5str(svg)+'.svg'; bgDir.file(bgName,svg); }
-      const pageObj={ textstartat:36, sprites:[], md5:bgName, num:i+1, lastSprite:'' };
+      const pageObj=page.sjrMeta ? cloneJson(page.sjrMeta) : {textstartat:36};
+      const oldSpriteIds=Array.isArray(pageObj.sprites)?[...pageObj.sprites]:[];
+      oldSpriteIds.forEach(id=>{ delete pageObj[id]; });
+      pageObj.sprites=[]; pageObj.md5=bgName; pageObj.num=i+1; pageObj.lastSprite='';
+      const emittedIds=[], usedIds=new Set();
+      const uniqueSpriteId=(preferred,fallback)=>{
+        let id=(preferred||fallback||'Sprite').trim()||'Sprite', n=2, base=id;
+        while(usedIds.has(id)) id=base+' '+(n++);
+        usedIds.add(id); return id;
+      };
       page.chars.forEach((c,idx)=>{
-        const spId=(c.name||'Karakter')+' '+(idx+1), md5name=charFile(c.asset);
+        const spId=uniqueSpriteId(c.sjrId,(c.name||'Karakter')+' '+(idx+1)), md5name=charFile(c.asset);
         const w=Math.round(c.asset.w),h=Math.round(c.asset.h),dispW=c.sizePct/100*STAGE_W,scale=+(dispW/w).toFixed(4);
         const xcoor=Math.round(c.fx*STAGE_W),ycoor=Math.round(c.fy*STAGE_H);
-        pageObj.sprites.push(spId); pageObj.lastSprite=spId;
-        pageObj[spId]={ shown:true,type:'sprite',md5:md5name,id:spId,flip:!!c.flip,name:c.name||'Karakter',
-          angle:0,scale,speed:2,defaultScale:scale,sounds:['pop.mp3',...soundFiles],
-          xcoor,ycoor,cx:Math.round(w/2),cy:Math.round(h/2),w,h,
-          homex:xcoor,homey:ycoor,homescale:scale,homeshown:true,homeflip:!!c.flip,scripts:[] };
+        pageObj.sprites.push(spId); emittedIds.push(spId); pageObj.lastSprite=spId;
+        const sp=c.sjrMeta ? cloneJson(c.sjrMeta) : {};
+        Object.assign(sp,{shown:sp.shown!==false,type:'sprite',md5:md5name,id:spId,flip:!!c.flip,name:c.name||'Karakter',
+          angle:typeof sp.angle==='number'?sp.angle:0,scale,speed:typeof sp.speed==='number'?sp.speed:2,
+          defaultScale:scale,xcoor,ycoor,cx:Math.round(w/2),cy:Math.round(h/2),w,h,
+          homex:xcoor,homey:ycoor,homescale:scale,homeshown:sp.homeshown!==false,homeflip:!!c.flip});
+        sp.scripts=Array.isArray(sp.scripts)?sp.scripts:[];
+        sp.sounds=Array.isArray(sp.sounds)?sp.sounds.map(mapSoundRef):['pop.mp3',...soundFiles];
+        pageObj[spId]=sp;
       });
       (page.texts||[]).forEach((t,ti)=>{
-        const spId='Text '+(ti+1);
+        const spId=uniqueSpriteId(t.sjrId,'Text '+(ti+1));
         const xcoor=Math.round(t.fx*STAGE_W), ycoor=Math.round(t.fy*STAGE_H);
         const wt=Math.max(1,Math.round((t.str||'').length*(t.fontsize||16)*0.594));
         const ht=Math.round((t.fontsize||16)*1.125);
-        pageObj.sprites.push(spId);
-        pageObj[spId]={shown:true,type:'text',id:spId,speed:2,
+        pageObj.sprites.push(spId); emittedIds.push(spId); pageObj.lastSprite=spId;
+        const sp=t.sjrMeta ? cloneJson(t.sjrMeta) : {};
+        Object.assign(sp,{shown:sp.shown!==false,type:'text',id:spId,
+          speed:typeof sp.speed==='number'?sp.speed:2,
           cx:Math.round(wt/2),cy:Math.round(ht/2),w:wt,h:ht,
           xcoor,ycoor,homex:xcoor,homey:ycoor,
-          str:t.str||'',color:t.color||'#1a1a1a',fontsize:t.fontsize||16};
+          str:t.str||'',color:t.color||'#1a1a1a',fontsize:t.fontsize||16});
+        pageObj[spId]=sp;
       });
-      pageObj.layers=[...pageObj.sprites];
+      const oldLayers=page.sjrMeta&&Array.isArray(page.sjrMeta.layers)?page.sjrMeta.layers:[];
+      const emittedSet=new Set(emittedIds);
+      pageObj.layers=[
+        ...oldLayers.filter(id=>emittedSet.has(id)),
+        ...emittedIds.filter(id=>!oldLayers.includes(id))
+      ];
       jsonObj[key]=pageObj;
       const tb=await renderThumb(page); const tn=i+'_'+md5buf(tb)+'.png'; thumbDir.file(tn,tb); if(i===0)firstThumb=tn;
     }
@@ -2056,7 +2086,7 @@ async function exportSRJ(pagesArg){
     const bgManifest=[];
     for(const it of state.bgLib){
       if(!it.asset) continue;
-      const svg=coverSvg(it.asset);
+      const svg=backgroundSvg(it.asset);
       const fn=md5str(svg)+'.svg';
       bgDir.file(fn,svg); // sayfa döngüsünde eklenmişse üzerine yazmak sorun değil
       bgManifest.push({file:fn, name:it.name||'Arkaplan'});
@@ -2088,6 +2118,16 @@ function svgImageHref(svgText){
 function svgRectFill(svgText){
   try{ const r=new DOMParser().parseFromString(svgText,'image/svg+xml').querySelector('rect');
     return r?(r.getAttribute('fill')||null):null;
+  }catch(e){ return null; }
+}
+function solidColorSvgFill(svgText){
+  try{
+    const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
+    if(doc.querySelector('parsererror')) return null;
+    const svg=doc.documentElement;
+    const kids=[...svg.children].filter(el=>!['defs','metadata','title','desc'].includes(el.tagName.toLowerCase()));
+    if(kids.length!==1 || kids[0].tagName.toLowerCase()!=='rect') return null;
+    return kids[0].getAttribute('fill')||null;
   }catch(e){ return null; }
 }
 async function svgTextToAsset(text){
@@ -2133,10 +2173,7 @@ async function importSRJ(file){
   }
   async function getBgLib(md5file,bgText){
     if(bgLibByFile.has(md5file)) return bgLibByFile.get(md5file);
-    const href=svgImageHref(bgText); if(!href) return null;
-    const {w,h}=svgDims(bgText);
-    let img; try{ img=await loadImage(href); }catch(e){ img=new Image(); }
-    const asset={ isSvg:true, vector:false, svgText:bgText, dataURL:href, w:w||STAGE_W, h:h||STAGE_H, img };
+    const asset=await svgTextToAsset(bgText);
     const it={ id:nextId(), name:'Arkaplan', asset };
     ns.bgLib.push(it); bgLibByFile.set(md5file,it); return it;
   }
@@ -2168,7 +2205,7 @@ async function importSRJ(file){
     let ext=(s.path.split('.').pop()||'wav').toLowerCase();
     if(!['wav','mp3','webm','m4a','ogg'].includes(ext)) ext='wav';
     const base=s.path.split('/').pop();
-    ns.sounds.push({ id:nextId(), name: sndNameByFile[base] || ('Ses '+(++sN)), buf:await s.f.async('arraybuffer'), ext });
+    ns.sounds.push({ id:nextId(), name: sndNameByFile[base] || ('Ses '+(++sN)), buf:await s.f.async('arraybuffer'), ext, sourceFile:base });
   }
 
   // sayfalar
@@ -2176,16 +2213,18 @@ async function importSRJ(file){
     const po=J[pageKeys[i]];
     const page=newPage();
     if(po){
+      page.sjrMeta=cloneJson(po);
       // arkaplan
       if(po.md5){
         const bf=findZipFile(zip,[prefix+'backgrounds/'+po.md5,'backgrounds/'+po.md5]);
         if(bf){
           const bgText=await bf.async('string');
-          if(svgImageHref(bgText)){
+          const solidFill=solidColorSvgFill(bgText);
+          if(solidFill){
+            page.bg={ mode:'color', color:solidFill, asset:null, bgId:null };
+          } else {
             const it=await getBgLib(po.md5,bgText);
             if(it) page.bg={ mode:'image', asset:it.asset, color:'#fff', bgId:it.id };
-          } else {
-            page.bg={ mode:'color', color:svgRectFill(bgText)||'#eaf4ff', asset:null, bgId:null };
           }
         }
       }
@@ -2199,7 +2238,8 @@ async function importSRJ(file){
           page.texts=page.texts||[];
           page.texts.push({id:nextId(),str:sp.str||'',
             color:colorToHex(sp.color||'#1a1a1a'),fontsize:sp.fontsize||16,
-            fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy))});
+            fx:Math.max(0,Math.min(1,fx)),fy:Math.max(0,Math.min(1,fy)),
+            sjrId:spId,sjrMeta:cloneJson(sp)});
           continue;
         }
         if(sp.type!=='sprite') continue;
@@ -2211,7 +2251,8 @@ async function importSRJ(file){
         const fx=((typeof sp.xcoor==='number')?sp.xcoor:STAGE_W/2)/STAGE_W;
         const fy=((typeof sp.ycoor==='number')?sp.ycoor:STAGE_H/2)/STAGE_H;
         page.chars.push({ id:nextId(), libId:lib.id, name:sp.name||lib.name||'Karakter',
-          asset:lib.asset, fx:Math.max(0,Math.min(1,fx)), fy:Math.max(0,Math.min(1,fy)), sizePct, flip:!!sp.flip, aspect });
+          asset:lib.asset, fx:Math.max(0,Math.min(1,fx)), fy:Math.max(0,Math.min(1,fy)), sizePct, flip:!!sp.flip, aspect,
+          sjrId:spId,sjrMeta:cloneJson(sp) });
       }
     }
     ns.pages.push(page);
