@@ -150,7 +150,9 @@ function startOperation(title){
   box.hidden=false; titleEl.textContent=title;
   const update=(percent,text)=>{
     const p=Math.max(0,Math.min(100,Math.round(Number(percent)||0)));
-    pctEl.textContent=p+'%'; bar.style.width=p+'%'; label.textContent=text||'İşleniyor…';
+    const nextText=text||'İşleniyor…';
+    pctEl.textContent=p+'%'; bar.style.width=p+'%';
+    if(label.textContent!==nextText) label.textContent=nextText;
   };
   update(0,'Hazırlanıyor…');
   return {
@@ -1746,10 +1748,18 @@ async function renderThumb(page){
 function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.naturalHeight||img.height||H,r=Math.max(W/iw,H/ih),dw=iw*r,dh=ih*r;
   try{ctx.drawImage(img,(W-dw)/2,(H-dh)/2,dw,dh);}catch(e){} }
 
+let transferBusy=false;
+function setTransferBusy(busy){
+  transferBusy=!!busy;
+  document.getElementById('importBtn').disabled=transferBusy;
+  document.getElementById('exportBtn').disabled=transferBusy;
+}
+
 async function exportSRJ(pagesArg){
+  if(transferBusy) return showToast('Başka bir içe/dışa aktarma işlemi sürüyor');
   if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
-  const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
+  const btn=document.getElementById('exportBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Hazırlanıyor…';
   const op=startOperation('Dışa aktarılıyor');
   op.update(5,'Proje yapısı hazırlanıyor…');
   try{
@@ -1863,7 +1873,7 @@ async function exportSRJ(pagesArg){
     op.update(90,'Arşiv sıkıştırılıyor…');
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'},meta=>{
       const pct=90+Math.round(Math.max(0,Math.min(100,meta.percent||0))*0.08);
-      op.update(pct,'Arşiv sıkıştırılıyor… '+Math.round(meta.percent||0)+'%');
+      op.update(pct,'Arşiv sıkıştırılıyor…');
     });
     op.update(98,'İndirme hazırlanıyor…');
     const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
@@ -1872,7 +1882,7 @@ async function exportSRJ(pagesArg){
     op.update(100,'Tamamlandı');
     showToast('✓ '+safe+'.sjr indirildi');
   }catch(err){ console.error(err); showToast('Dışa aktarma sırasında hata oluştu','err'); }
-  finally{ op.close(); btn.disabled=false; btn.textContent=old; }
+  finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
 }
 document.getElementById('exportBtn').onclick=()=>exportSRJ();
 
@@ -2158,7 +2168,8 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
       +'<div class="warnline">↶ İçe aktardıktan sonra gerekirse Geri Al ile önceki çalışmana dönebilirsin.</div>'
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
-  const btn=document.getElementById('importBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Yükleniyor…';
+  if(transferBusy){showToast('Başka bir içe/dışa aktarma işlemi sürüyor');return;}
+  const btn=document.getElementById('importBtn'); const old=btn.textContent; setTransferBusy(true); btn.textContent='Yükleniyor…';
   const op=startOperation('İçe aktarılıyor');
   try{
     const report=await importSRJ(file,op.update);
@@ -2167,7 +2178,7 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
   }catch(err){
     console.error(err);
     showToast('İçe aktarılamadı: '+(err.message||'dosya okunamadı'),'err');
-  }finally{ op.close(); btn.disabled=false; btn.textContent=old; }
+  }finally{ op.close(); setTransferBusy(false); btn.textContent=old; }
 });
 
 
@@ -2337,7 +2348,7 @@ function openBgPick(pageIdx){
     state.bgLib.forEach(it=>{
       const item=document.createElement('div'); item.className='pick-item bgitem';
       if(curPg.bg.bgId===it.id) item.style.borderColor='var(--blue)';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
+      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
       const choose=()=>{ checkpoint(); applyBgToPage(pageIdx,it); closeBgPick(); scheduleAutosave(); };
@@ -2382,7 +2393,7 @@ function openCharPick(pageIdx){
     empty.style.display='none'; grid.style.display='';
     state.charLib.forEach(it=>{
       const item=document.createElement('div'); item.className='pick-item';
-      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=escapeHtml(it.name);
+      const img=document.createElement('img'); img.src=it.asset.dataURL; img.alt=it.name||'';
       const nm=document.createElement('div'); nm.className='nm'; nm.textContent=it.name;
       item.append(img,nm);
       const choose=()=>{ checkpoint(); addCharToPage(pageIdx,it); closeCharPick(); scheduleAutosave(); };
