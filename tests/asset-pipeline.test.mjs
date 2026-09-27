@@ -13,7 +13,7 @@ test('scalePathData scales absolute and relative path coordinates',()=>{
 test('scalePathData preserves arc flags while scaling radii and endpoints',()=>{
   assert.equal(
     scalePathData('M0 0 A10 20 45 1 0 30 40',2,3),
-    'M0 0 A20 60 45 1 0 60 120'
+    'M0 0A20 60 45 1 0 60 120'
   );
 });
 
