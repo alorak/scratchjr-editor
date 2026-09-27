@@ -68,3 +68,50 @@ test('unsafe SVG fallback is rejected instead of nesting SVG data URLs',()=>{
 test('pagehide audio cleanup does not trigger a sound-list rerender',()=>{
   assert.match(app,/stopCurrentSound\(false\)/);
 });
+
+test('service worker refreshes assets from network before cached fallback',async()=>{
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.match(sw,/async function networkFirst\(request,fallbackRequest=request\)/);
+  assert.match(sw,/const response=await fetch\(request\)/);
+  assert.match(sw,/caches\.match\(fallbackRequest\)/);
+  assert.doesNotMatch(sw,/caches\.match\(event\.request\)[\s\S]{0,160}if\(cached\) return cached/);
+});
+
+test('SVG security policy runs before browser rendering',()=>{
+  const start=app.indexOf('async function fileToAsset(file)');
+  const end=app.indexOf('/* ---------- arkaplan asset dönüşümü ---------- */',start);
+  const fn=app.slice(start,end);
+  const inspectAt=fn.indexOf('inspectSvgCompatibility(text)');
+  const loadAt=fn.indexOf('loadImage(svgDataURL)');
+  assert.ok(inspectAt>=0&&loadAt>=0&&inspectAt<loadAt);
+  assert.match(fn,/svgPolicy\.activeContent/);
+});
+
+test('backgrounds share the same complex-SVG fallback policy',()=>{
+  const start=app.indexOf('async function fileToBackgroundAsset(file)');
+  const end=app.indexOf('/* ---------- kütüphane \/ yerleştirme ---------- */',start);
+  const fn=app.slice(start,end);
+  assert.match(fn,/policy\.safeDirectVector/);
+  assert.match(fn,/svgToPngPreview\(rawURL/);
+  assert.match(fn,/policy\.activeContent/);
+});
+
+test('ImageTracer output re-enters SVG policy and normalization',()=>{
+  assert.match(app,/const tracedPolicy=inspectSvgCompatibility\(traced\)/);
+  assert.match(app,/normalizeSvgForChar\(traced/);
+  assert.match(app,/normalizeSvgForBackground\(traced\)/);
+});
+
+test('recorder invalidates pending microphone permission requests',()=>{
+  assert.match(app,/startRequestId/);
+  assert.match(app,/const requestId=\+\+startRequestId/);
+  assert.match(app,/requestId!==startRequestId\|\|!overlay\.classList\.contains\('show'\)/);
+  assert.match(app,/requestedStream\.getTracks\(\)\.forEach\(t=>t\.stop\(\)\)/);
+});
+
+test('sound preview cancels stale async decodes',()=>{
+  assert.match(app,/playbackGeneration/);
+  assert.match(app,/const generation=playbackGeneration/);
+  assert.match(app,/if\(generation!==playbackGeneration\) return/);
+  assert.match(app,/generation===playbackGeneration&&currentPlayingId===s\.id/);
+});
