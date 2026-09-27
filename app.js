@@ -2,7 +2,7 @@ if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
 }
 
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
@@ -469,13 +469,13 @@ async function fileToAsset(file){
     const w=img.naturalWidth||svgDims(text).w||150;
     const h=img.naturalHeight||svgDims(text).h||150;
 
-    // 1. Pure-path SVG: yalnızca transform içermeyen düz vektörleri normalize et.
-    // Transform'lu SVG'yi zorla flatten etmek görseli bozabildiği için aşağıdaki
-    // raster fallback yoluna bırakıyoruz; böylece görünüm kaybolmuyor.
-    const hasEmbedded=/<image[\s/>]/i.test(text);
-    const hasTransforms=hasSvgTransform(text);
-    const hasRootPresentation=hasSvgRootPresentation(text);
-    if(!hasEmbedded && !hasTransforms && !hasRootPresentation){
+    // 1. Yalnızca deterministik olarak güvenli görülen SVG'leri doğrudan
+    // vektör normalize et. Arc/transform/style/effect/unsupported geometry
+    // içerenler görünüm kaybını önlemek için raster fallback'e gider.
+    const svgPolicy=inspectSvgCompatibility(text);
+    if(svgPolicy.externalRefs) throw new Error('SVG harici ağ kaynağı içeriyor; offline kullanım için desteklenmiyor');
+    const hasEmbedded=svgPolicy.hasEmbeddedImage;
+    if(svgPolicy.safeDirectVector){
       const norm=normalizeSvgForChar(text, w, h);
       if(norm){
         const normDataURL='data:image/svg+xml;base64,'+b64(norm.text);
@@ -553,6 +553,8 @@ async function fileToBackgroundAsset(file){
   const isSvg=/svg/.test(file.type)||/\.svg$/i.test(file.name);
   if(isSvg){
     const raw=await readAsText(file);
+    const policy=inspectSvgCompatibility(raw);
+    if(policy.externalRefs) throw new Error('SVG harici ağ kaynağı içeriyor; offline kullanım için desteklenmiyor');
     const normalized=normalizeSvgForBackground(raw)||raw;
     const dataURL='data:image/svg+xml;base64,'+b64(normalized);
     const img=await loadImage(dataURL).catch(()=>new Image());
@@ -1704,7 +1706,9 @@ function solidColorSvgFill(svgText){
   }catch(e){ return null; }
 }
 async function svgTextToAsset(text,opts={}){
-  const hasImage=/<image[\s/>]/i.test(text);
+  const policy=inspectSvgCompatibility(text);
+  if(policy.externalRefs) throw new Error('Projedeki SVG harici ağ kaynağı içeriyor');
+  const hasImage=policy.hasEmbeddedImage;
   const {w,h}=svgDims(text);
   const dataURL='data:image/svg+xml;base64,'+b64(text);
   let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
@@ -1894,156 +1898,87 @@ function confirmModal(opts){
 
 /* ---------- SVG bilgi analizi ---------- */
 function analyzeSvg(svgText){
-  const text = svgText || '';
-  const byteSize = new TextEncoder().encode(text).length;
-  const paths    = (text.match(/<path[\s>]/gi)||[]).length;
-  const circles  = (text.match(/<circle[\s>]/gi)||[]).length;
-  const polygons = (text.match(/<polygon[\s>]/gi)||[]).length;
-  const rects    = (text.match(/<rect[\s>]/gi)||[]).length;
-  const styleFills = (text.match(/style="[^"]*fill:/gi)||[]).length;
-  const directFills= (text.match(/\bfill="[^"]*"/gi)||[]).length;
-  const colors   = new Set((text.match(/fill="(#[0-9a-fA-F]{3,8})"/gi)||[]).map(m=>m.toLowerCase())).size;
-  const hasViewBox = /viewBox="[^"]*"/.test(text);
-  const hasXmlns  = /xmlns="http:\/\/www\.w3\.org\/2000\/svg"/.test(text);
-  const hasComment= /<!--Created with Scratch Jr-->/.test(text);
-  const hasGScale = /<g[^>]*transform="scale\(/.test(text);
-  const hasImage  = /<image[\s/>]/i.test(text);
-  const arcPaths  = (text.match(/<path[^>]+d="[^"]*[Aa][\d\s.-]/g)||[]).length;
-  const vbMatch   = text.match(/viewBox="([^"]*)"/);
-  const vbVal     = vbMatch ? vbMatch[1] : '—';
-  const wMatch    = text.match(/\bwidth="([^"]*)"/);
-  const hMatch    = text.match(/\bheight="([^"]*)"/);
-  const wsNodes      = (text.match(/>\s+</g)||[]).length;
-  const allComments  = (text.match(/<!--/g)||[]).length;
-  const extraComments= Math.max(0, allComments - (hasComment?1:0));
-  const vbIs259  = /viewBox="0 0 259 259"/.test(text);
-  const sizeIs259= /width="259px"/.test(text) && /height="259px"/.test(text);
-  return { byteSize, paths, circles, polygons, rects, styleFills, directFills,
-           colors, hasViewBox, hasXmlns, hasComment, hasGScale, hasImage,
-           arcPaths, vbVal, w: wMatch?wMatch[1]:'—', h: hMatch?hMatch[1]:'—',
-           wsNodes, extraComments, vbIs259, sizeIs259 };
+  const text=svgText||'';
+  const policy=inspectSvgCompatibility(text);
+  const byteSize=new TextEncoder().encode(text).length;
+  const paths=(text.match(/<path[\s>]/gi)||[]).length;
+  const circles=(text.match(/<circle[\s>]/gi)||[]).length;
+  const polygons=(text.match(/<polygon[\s>]/gi)||[]).length;
+  const directFills=(text.match(/\bfill="[^"]*"/gi)||[]).length;
+  const colors=new Set((text.match(/fill="(#[0-9a-fA-F]{3,8})"/gi)||[]).map(m=>m.toLowerCase())).size;
+  const vbMatch=text.match(/viewBox="([^"]*)"/i);
+  const wMatch=text.match(/\bwidth="([^"]*)"/i);
+  const hMatch=text.match(/\bheight="([^"]*)"/i);
+  return {...policy,byteSize,paths,circles,polygons,directFills,colors,
+    vbVal:vbMatch?vbMatch[1]:'—',w:wMatch?wMatch[1]:'—',h:hMatch?hMatch[1]:'—'};
 }
 
 function showSvgInfo(libItem){
-  const a = analyzeSvg(libItem.asset.svgText);
-  document.getElementById('infoTitle').textContent = libItem.name + ' — SVG Bilgileri';
-
-  // ── Genel istatistikler ────────────────────────────────────────────────────
-  const genRows = [
-    ['Dosya boyutu', (a.byteSize/1024).toFixed(1)+' KB'],
-    ['Path sayısı',  a.paths],
-    ['Benzersiz renk (= path)', a.colors+(a.colors>100?' ⚠':'')],
-    ['Boyut',        a.w+' × '+a.h],
-    ['viewBox',      a.vbVal],
+  const a=analyzeSvg(libItem.asset.svgText);
+  document.getElementById('infoTitle').textContent=libItem.name+' — SVG Bilgileri';
+  const safe=v=>escapeHtml(String(v));
+  const unsupported=Object.entries(a.unsupportedTags).filter(([,n])=>n).map(([k,n])=>k+' ×'+n).join(', ')||'Yok';
+  const effects=Object.entries(a.effectTags).filter(([,n])=>n).map(([k,n])=>k+' ×'+n).join(', ')||'Yok';
+  const genRows=[
+    ['Çıktı türü',libItem.asset.vector?'Vektör':'Güvenli raster / gömülü'],
+    ['Dosya boyutu',(a.byteSize/1024).toFixed(1)+' KB'],
+    ['Path sayısı',a.paths],
+    ['Renk sayısı',a.colors],
+    ['Boyut',a.w+' × '+a.h],
+    ['viewBox',a.vbVal]
+  ];
+  const checks=[
+    {ok:!a.externalRefs,label:'Harici ağ kaynağı',value:a.externalRefs?'Var':'Yok',
+      errNote:'Offline çalışma ve güvenlik için http(s) kaynakları kabul edilmez.'},
+    {ok:a.transformCount===0,label:'Transform',value:a.transformCount?a.transformCount+' adet':'Yok',
+      errNote:'Transform içeren yüklemeler görünümü korumak için raster fallback kullanır.'},
+    {ok:a.arcPaths===0,label:'Arc komutu A/a',value:a.arcPaths?a.arcPaths+' path':'Yok',
+      errNote:'Arc içeren yüklemeler doğrudan vektör normalize edilmez; raster fallback kullanılır.'},
+    {ok:a.unsupportedCount===0,label:'Ek geometri',value:unsupported,
+      errNote:'rect/ellipse/line/polyline/text/use gibi yapılar doğrudan vektör yoluna alınmaz.'},
+    {ok:a.effectCount===0,label:'Clip / mask / gradient / filter',value:effects,
+      errNote:'Efektli SVG görünümü korunmak için raster fallback kullanır.'},
+    {ok:a.styleCount===0,label:'style attribute',value:a.styleCount?a.styleCount+' adet':'Yok',
+      errNote:'CSS style içeren SVG otomatik normalizasyonda raster fallback kullanır.'},
+    {ok:!a.rootPresentation,label:'Kök SVG presentation',value:a.rootPresentation?'Var':'Yok',
+      errNote:'Kökten miras alınan fill/stroke/opacity gibi stiller raster fallback ile korunur.'},
+    {ok:!a.viewBoxOriginNonZero,label:'viewBox başlangıcı',value:a.viewBoxValid?(a.viewBox[0]+' '+a.viewBox[1]):'Belirsiz',
+      errNote:'0,0 dışında başlayan viewBox doğrudan koordinat ölçeklemesine sokulmaz.'}
   ];
 
-  // ── Uyumluluk kontrolleri ─────────────────────────────────────────────────
-  // Her kontrol: { ok, label, value, okNote, errNote }
-  const checks = [
-    {
-      ok:    a.styleFills===0,
-      label: 'Renk formatı',
-      value: a.styleFills===0 ? `fill="..." attr (${a.directFills} path)` : `style="fill:..." (${a.styleFills} path)`,
-      okNote:  'Renkler paint editörde doğru görünür.',
-      errNote: 'Paint editörde TÜM yollar siyah görünür — fill attr değil CSS style okunuyor!'
-    },
-    {
-      ok:    a.circles===0,
-      label: '<circle> elementi',
-      value: a.circles===0 ? 'Yok' : a.circles+' adet',
-      okNote:  'ScratchJr yalnızca <path> render eder, sorun yok.',
-      errNote: 'ScratchJr <circle> render edemez, element atlanır ya da çökmeye yol açar.'
-    },
-    {
-      ok:    a.polygons===0,
-      label: '<polygon> elementi',
-      value: a.polygons===0 ? 'Yok' : a.polygons+' adet',
-      okNote:  'ScratchJr yalnızca <path> render eder, sorun yok.',
-      errNote: 'ScratchJr <polygon> render edemez, element atlanır ya da çökmeye yol açar.'
-    },
-    {
-      ok:    a.arcPaths===0,
-      label: 'Arc komutu (A/a)',
-      value: a.arcPaths===0 ? 'Yok' : a.arcPaths+' path\'de',
-      okNote:  'drawCommand tablosunda arc işleyicisi yok, sorun çıkmaz.',
-      errNote: '"m[r] is not a function" çökmesi — ScratchJr arc komutunu tanımıyor!'
-    },
-    {
-      ok:    !a.hasGScale,
-      label: '<g transform="scale(...)">',
-      value: a.hasGScale ? 'Var' : 'Yok',
-      okNote:  'Koordinatlar doğrudan ölçeklendirilmiş, paint editör doğru gösterir.',
-      errNote: 'Paint editör bu dönüşümü yok sayar → karakter kırpılır, yalnızca sol üst köşe görünür!'
-    },
-    {
-      ok:    a.wsNodes===0,
-      label: 'Tag arası boşluk (\\n\\t)',
-      value: a.wsNodes===0 ? 'Yok' : a.wsNodes+' yer',
-      okNote:  'Text node yok, drawLayer güvenli çalışır.',
-      errNote: '"e.getAttribute is not a function" çökmesi — boşluk text node olarak işleniyor!'
-    },
-    {
-      ok:    a.extraComments===0,
-      label: 'Fazladan <!-- yorum -->',
-      value: a.extraComments===0 ? 'Yok' : a.extraComments+' adet',
-      okNote:  'Ekstra comment node yok, drawLayer güvenli çalışır.',
-      errNote: '"e.getAttribute is not a function" çökmesi — comment node element sanılıyor!'
-    },
-    {
-      ok:    a.vbIs259 && a.sizeIs259,
-      label: 'Boyut 259×259px',
-      value: (a.vbIs259&&a.sizeIs259) ? '259px / 0 0 259 259' : (a.w+'×'+a.h+' / '+a.vbVal),
-      okNote:  'Karakter alanını tam kaplar.',
-      errNote: 'Karakter 259×259 slotuna tam oturmayabilir, ölçekleme hatası oluşabilir.'
-    },
-  ];
-
-  const passCount = checks.filter(c=>c.ok).length;
-  const total     = checks.length;
-  const pct       = Math.round(passCount/total*100);
-
-  // ── HTML ──────────────────────────────────────────────────────────────────
-  let html = '<div class="info-section-title">Genel</div>';
-  html += '<div class="info-stats-grid">';
-  // first 4 items: 2-col grid (2×2); last item (viewBox) spans full width
+  let html='<div class="info-section-title">Genel</div><div class="info-stats-grid">';
   genRows.forEach(([l,v],i)=>{
-    const span = (i===genRows.length-1 && genRows.length%2===1) ? ' span2' : '';
-    html += `<div class="stat-card${span}"><div class="lbl">${l}</div><div class="val">${v}</div></div>`;
+    const span=(i===genRows.length-1&&genRows.length%2===1)?' span2':'';
+    html+=`<div class="stat-card${span}"><div class="lbl">${safe(l)}</div><div class="val">${safe(v)}</div></div>`;
   });
-  html += '</div>';
-
-  html += '<div class="info-section-title">ScratchJr Uyumluluğu</div>';
-  html += '<div class="compat-grid">';
-  html += checks.map(c=>`
-    <div class="compat-check ${c.ok?'check-ok':'check-err'}">
-      <span class="check-icon">${c.ok?'✓':'✗'}</span>
-      <div class="check-body">
-        <div class="check-top">
-          <span class="lbl">${c.label}</span>
-          <span class="val">${c.value}</span>
-        </div>
-        ${(!c.ok)?`<div class="check-note">${c.errNote}</div>`:''}
-      </div>
+  html+='</div><div class="info-section-title">Vektör güvenlik politikası</div><div class="compat-grid">';
+  html+=checks.map(ch=>`
+    <div class="compat-check ${ch.ok?'check-ok':'check-err'}">
+      <span class="check-icon">${ch.ok?'✓':'↪'}</span>
+      <div class="check-body"><div class="check-top">
+        <span class="lbl">${safe(ch.label)}</span><span class="val">${safe(ch.value)}</span>
+      </div>${ch.ok?'':`<div class="check-note">${safe(ch.errNote)}</div>`}</div>
     </div>`).join('');
-  html += '</div>';
+  html+='</div>';
+  document.getElementById('infoStats').innerHTML=html;
 
-  document.getElementById('infoStats').innerHTML = html;
-
-  const compatEl = document.getElementById('infoCompat');
-  compatEl.className = 'compat-bar '+(pct===100?'good':pct>=62?'warn':'bad');
-  if(pct===100){
-    compatEl.innerHTML = '✓ Paint editörü ile tam uyumlu — yükleme hatası beklenmez';
-  } else {
-    const probs = checks.filter(c=>!c.ok).map(c=>c.label);
-    compatEl.innerHTML = `⚠ Uyumluluk: ${pct}% (${passCount}/${total}) — Sorun: ${probs.join(', ')}`;
+  const compatEl=document.getElementById('infoCompat');
+  if(!libItem.asset.vector || a.hasEmbeddedImage){
+    compatEl.className='compat-bar good';
+    compatEl.textContent='✓ Güvenli raster/gömülü çıktı — karmaşık SVG özellikleri görsel olarak korunur.';
+  }else if(a.safeDirectVector){
+    compatEl.className='compat-bar good';
+    compatEl.textContent='✓ Doğrudan vektör normalizasyon kriterleri temiz.';
+  }else{
+    compatEl.className='compat-bar warn';
+    compatEl.textContent='↪ Kaynak vektör korunuyor; yeni yüklemelerde bu yapı otomatik olarak raster fallback yoluna alınır.';
   }
-
   document.getElementById('infoOverlay').classList.add('show');
 }
 
-document.getElementById('infoClose').onclick    = ()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoCloseBtn').onclick  = ()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('infoOverlay')) document.getElementById('infoOverlay').classList.remove('show'); });
+document.getElementById('infoClose').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
+document.getElementById('infoCloseBtn').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
+document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))document.getElementById('infoOverlay').classList.remove('show');});
 
 /* ---------- arkaplan picker ---------- */
 let bgPickTarget=null;
