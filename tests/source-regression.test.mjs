@@ -141,7 +141,7 @@ test('import produces a user-visible validation report',async()=>{
   assert.match(index,/id="importReportSummary"/);
   assert.match(index,/id="importReportIssues"/);
   assert.match(app,/function showImportReport\(report\)/);
-  assert.match(app,/const report=await importSRJ\(file\)/);
+  assert.match(app,/const report=await importSRJ\(file,op\.update\)/);
   assert.match(app,/showImportReport\(report\)/);
 });
 
@@ -264,7 +264,7 @@ test('dialogs share focus trap escape handling and focus restoration',()=>{
   assert.match(app,/const dialogState=new WeakMap\(\),dialogStack=\[\]/);
   assert.match(app,/function showDialog\(overlay,initialFocus,onEscape\)/);
   assert.match(app,/function hideDialog\(overlay,restoreFocus=true\)/);
-  assert.match(app,/if\(e\.key==='Tab'\)/);
+  assert.match(app,/if\(e\.key!=='Tab'\) return/);
   assert.match(app,/stateForDialog\?\.opener\?\.isConnected/);
   assert.match(app,/showDialog\(overlay,recBtn,closeModal\)/);
   assert.match(app,/showDialog\(ov,document\.getElementById\('importReportClose'\),closeImportReport\)/);
