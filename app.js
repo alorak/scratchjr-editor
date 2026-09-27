@@ -755,11 +755,20 @@ function renderSounds(){
   });
 }
 
+const AudioContextCtor=window.AudioContext||window.webkitAudioContext;
 let _waveAudioCtx=null;
+function ensureAudioContext(ctx){
+  if(!AudioContextCtor) throw new Error('Web Audio desteklenmiyor');
+  return (!ctx||ctx.state==='closed')?new AudioContextCtor():ctx;
+}
+function closeAudioContext(ctx){
+  if(ctx&&ctx.state!=='closed') return ctx.close().catch(()=>{});
+  return Promise.resolve();
+}
 async function loadAndDrawWave(s,cvs,durEl){
   if(!s._waveData){
     try{
-      _waveAudioCtx=_waveAudioCtx||new(window.AudioContext||window.webkitAudioContext)();
+      _waveAudioCtx=ensureAudioContext(_waveAudioCtx);
       const decoded=await _waveAudioCtx.decodeAudioData(s.buf.slice(0));
       s._duration=decoded.duration;
       const ch=decoded.getChannelData(0);
@@ -1202,9 +1211,9 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 /* ---- SES KAYIT MODALI ---- */
 (function(){
   // State
-  let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null;
+  let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null, mediaSource=null;
   let animId=null, playAnimId=null;
-  let isRecording=false, startTime=0, waveData=[], lastSampleAt=0;
+  let isRecording=false, startTime=0, waveData=[], lastSampleAt=0, discardOnStop=false;
   let recBlob=null, blobUrl=null;
   let trimStart=0, trimEnd=1;
   let dragHandle=null, dragStartX=0, dragStartPct=0;
@@ -1365,7 +1374,8 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
   // Open / close
   function openModal(){
-    chunks=[];waveData=[];isRecording=false;recBlob=null;blobUrl=null;lastSampleAt=0;
+    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+    chunks=[];waveData=[];isRecording=false;recBlob=null;lastSampleAt=0;discardOnStop=false;
     trimStart=0;trimEnd=1;
     audio.src='';
     recBtn.classList.remove('recording');
@@ -1384,8 +1394,11 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     stopPlayback();
     cancelAnimationFrame(animId);
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    if(mediaSource){try{mediaSource.disconnect();}catch(e){} mediaSource=null;}
+    if(analyser){try{analyser.disconnect();}catch(e){} analyser=null;}
+    if(actx){closeAudioContext(actx);actx=null;}
     if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-    audio.removeAttribute('src');
+    audio.removeAttribute('src'); audio.load();
     hideTrim();
     addBtn.style.display='none';
   }
@@ -1394,11 +1407,11 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   async function startRec(){
     try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}
     catch(e){showToast('Mikrofon erisimi reddedildi');return;}
-    actx=actx||new(window.AudioContext||window.webkitAudioContext)();
+    actx=ensureAudioContext(actx);
     if(actx.state==='suspended') await actx.resume();
     analyser=actx.createAnalyser(); analyser.fftSize=1024;
-    actx.createMediaStreamSource(stream).connect(analyser);
-    chunks=[];waveData=[];lastSampleAt=0;
+    mediaSource=actx.createMediaStreamSource(stream); mediaSource.connect(analyser);
+    chunks=[];waveData=[];lastSampleAt=0;discardOnStop=false;
     const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
     mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
     mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
@@ -1425,18 +1438,20 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
   function stopRec(keep){
     if(!mediaRecorder||mediaRecorder.state==='inactive') return;
-    isRecording=false;
+    isRecording=false; discardOnStop=!keep;
     recBtn.classList.remove('recording');
     cancelAnimationFrame(animId);
     mediaRecorder.stop();
-    stream.getTracks().forEach(t=>t.stop()); stream=null;
+    if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
     if(!keep){waveData=[];drawIdle();}
   }
 
   async function onRecStop(){
+    if(discardOnStop){chunks=[];recBlob=null;discardOnStop=false;return;}
     if(!chunks.length) return;
     const mime=chunks[0].type||'audio/webm';
     recBlob=new Blob(chunks,{type:mime});
+    if(blobUrl) URL.revokeObjectURL(blobUrl);
     blobUrl=URL.createObjectURL(recBlob);
     audio.src=blobUrl;
     setPlayStop(true,false);
@@ -1473,9 +1488,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   addBtn.onclick=async()=>{
     if(!recBlob) return;
     addBtn.disabled=true; addBtn.textContent='Ekleniyor…';
+    let ac=null;
     try{
       const raw=await recBlob.arrayBuffer();
-      const ac=new AudioContext();
+      ac=ensureAudioContext(null);
       const decoded=await ac.decodeAudioData(raw);
       const sStart=Math.floor(trimStart*decoded.length);
       const sEnd=Math.floor(trimEnd*decoded.length);
@@ -1495,6 +1511,8 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     }catch(e){
       showToast('Hata: '+e.message);
       addBtn.disabled=false; addBtn.textContent='✅ Projeye Ekle';
+    }finally{
+      if(ac) await closeAudioContext(ac);
     }
   };
 
@@ -1510,7 +1528,11 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null;
 
 function stopCurrentSound(){
-  if(currentPlayingNode){ try{ currentPlayingNode.stop(); }catch(e){} currentPlayingNode=null; }
+  if(currentPlayingNode){
+    try{currentPlayingNode.stop();}catch(e){}
+    try{currentPlayingNode.disconnect();}catch(e){}
+    currentPlayingNode=null;
+  }
   currentPlayingId=null; _playStartTime=null;
   cancelAnimationFrame(_playRafId);
   renderSounds();
@@ -1520,7 +1542,8 @@ function togglePlaySound(s){
   if(currentPlayingId===s.id){ stopCurrentSound(); return; }
   stopCurrentSound();
   try{
-    audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();
+    audioCtx=ensureAudioContext(audioCtx);
+    if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
     audioCtx.decodeAudioData(s.buf.slice(0)).then(b=>{
       const node=audioCtx.createBufferSource();
       node.buffer=b; node.connect(audioCtx.destination);
@@ -1540,6 +1563,14 @@ function togglePlaySound(s){
 }
 
 function playSound(s){ togglePlaySound(s); }
+
+function disposeAudioResources(){
+  stopCurrentSound();
+  const contexts=[audioCtx,_waveAudioCtx];
+  audioCtx=null; _waveAudioCtx=null;
+  contexts.forEach(ctx=>closeAudioContext(ctx));
+}
+window.addEventListener('pagehide',disposeAudioResources);
 
 /* ---------- dışa aktarma ---------- */
 const md5str=s=>SparkMD5.hash(s); const md5buf=b=>SparkMD5.ArrayBuffer.hash(b);
