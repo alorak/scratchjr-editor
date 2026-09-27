@@ -63,3 +63,9 @@ export function resolveCurrentPageIndex(currentPage,pageKeys){
   const idx=pages.indexOf(currentPage);
   return idx>=0?idx:0;
 }
+
+export function selectBackgroundSvg(asset,coverSvg){
+  if(asset&&asset.preserveSvg&&asset.svgText) return asset.svgText;
+  if(asset&&asset.vector&&asset.svgText) return asset.svgText;
+  return coverSvg(asset);
+}
