@@ -12,6 +12,8 @@ const CORE=[
   './sjr-archive-utils.mjs',
   './sjr-import-export.mjs',
   './stage-controller.mjs',
+  './asset-pipeline.mjs',
+  './library-controller.mjs',
   './vendor/jszip.min.js',
   './vendor/spark-md5.min.js',
   './vendor/imagetracer_v1.2.6.js'

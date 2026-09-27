@@ -36,6 +36,8 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - `sjr-archive-utils.mjs`: güvenli ZIP doğrulama, import resolver, manifest ve rapor yardımcıları
 - `sjr-import-export.mjs`: .sjr import/export orchestration, round-trip metadata, transfer progress ve state uygulama controller'ı
 - `stage-controller.mjs`: sayfa thumbnail/cache, sahne render, drag/seçim, yazı editörü, grid ve page-level picker akışları
+- `asset-pipeline.mjs`: SVG güvenlik politikası, normalizasyon, ImageTracer, raster fallback ve character/background asset dönüşümü
+- `library-controller.mjs`: karakter/arkaplan kütüphanesi render, upload, silme/uygulama, conversion bar ve SVG bilgi modalı
 - `tests/`: metadata, import doğrulama, güvenlik, offline, ses/layer, performans regresyonları ve gerçek-dünya ScratchJr archive fixture testleri
 - `.github/workflows/ci.yml`: syntax + Node testleri ve gerçek headless Chrome smoke testi
 
