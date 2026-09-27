@@ -1167,13 +1167,13 @@ document.getElementById('textSizeDown').onclick=()=>{
   const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.max(8,t.fontsize-2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); renderPages(); scheduleAutosave();
+  renderStage(); scheduleRenderPages(); scheduleAutosave();
 };
 document.getElementById('textSizeUp').onclick=()=>{
   const t=getSelText(); if(!t) return; checkpoint();
   t.fontsize=Math.min(96,t.fontsize+2);
   document.getElementById('textSizeVal').textContent=t.fontsize;
-  renderStage(); renderPages(); scheduleAutosave();
+  renderStage(); scheduleRenderPages(); scheduleAutosave();
 };
 
 document.getElementById('textDelBtn').onclick=async()=>{
