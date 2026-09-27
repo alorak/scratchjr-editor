@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>SJR Atölyesi — ScratchJr Proje Oluşturucu</title>
 <script src="vendor/jszip.min.js"></script>
 <script src="vendor/spark-md5.min.js"></script>
@@ -214,6 +215,24 @@
     </div>
     <div class="foot">
       <button class="btn ghost" id="infoCloseBtn" style="font-size:.85rem;padding:8px 14px">Kapat</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- IMPORT REPORT MODAL -->
+<div class="modal-overlay" id="importReportOverlay" role="dialog" aria-modal="true" aria-labelledby="importReportTitle">
+  <div class="modal import-report-modal">
+    <div class="head">
+      <div class="icon" aria-hidden="true">✓</div>
+      <h3 id="importReportTitle">İçe Aktarma Sonucu</h3>
+    </div>
+    <div class="body">
+      <p class="import-report-summary" id="importReportSummary"></p>
+      <ul class="import-report-issues" id="importReportIssues"></ul>
+    </div>
+    <div class="foot">
+      <button class="btn ghost" id="importReportClose">Tamam</button>
     </div>
   </div>
 </div>
