@@ -541,6 +541,48 @@ async function fileToAsset(file){
   return { isSvg:false, vector:false, svgText:wrapRasterSvg(pngURL,w,h), dataURL:pngURL, w, h, img:baseImg };
 }
 
+/* ---------- arkaplan asset dönüşümü ---------- */
+function normalizeSvgForBackground(svgText){
+  try{
+    const doc=new DOMParser().parseFromString(svgText,'image/svg+xml');
+    if(doc.querySelector('parsererror')) return null;
+    const svg=doc.documentElement;
+    doc.querySelectorAll('script').forEach(el=>el.remove());
+    const dims=svgDims(svgText);
+    if(!svg.getAttribute('viewBox')) svg.setAttribute('viewBox','0 0 '+dims.w+' '+dims.h);
+    svg.setAttribute('xmlns','http://www.w3.org/2000/svg');
+    svg.setAttribute('width',STAGE_W+'px');
+    svg.setAttribute('height',STAGE_H+'px');
+    svg.setAttribute('preserveAspectRatio','xMidYMid slice');
+    return new XMLSerializer().serializeToString(doc).replace(/^<\?xml[^>]*\?>\s*/,'');
+  }catch(e){ return null; }
+}
+
+async function fileToBackgroundAsset(file){
+  const isSvg=/svg/.test(file.type)||/\.svg$/i.test(file.name);
+  if(isSvg){
+    const raw=await readAsText(file);
+    const normalized=normalizeSvgForBackground(raw)||raw;
+    const dataURL='data:image/svg+xml;base64,'+b64(normalized);
+    const img=await loadImage(dataURL).catch(()=>new Image());
+    return {isSvg:true,vector:!/<image[\s/>]/i.test(normalized),preserveSvg:true,svgText:normalized,
+      dataURL,w:STAGE_W,h:STAGE_H,img};
+  }
+  const dataURL=await readAsDataURL(file);
+  const baseImg=await loadImage(dataURL);
+  const {pngURL,w,h}=capPng(baseImg,480);
+  if(conv.mode==='trace'){
+    try{
+      const traced=await rasterToVectorSvg(pngURL,conv.colors);
+      const normalized=normalizeSvgForBackground(traced)||traced;
+      const preview='data:image/svg+xml;base64,'+b64(normalized);
+      return {isSvg:false,vector:true,preserveSvg:true,svgText:normalized,dataURL:preview,
+        w:STAGE_W,h:STAGE_H,img:await loadImage(preview)};
+    }catch(e){ showToast('Arkaplan vektöre çevrilemedi, gömme kullanıldı','err'); }
+  }
+  return {isSvg:false,vector:false,preserveSvg:false,svgText:wrapRasterSvg(pngURL,w,h),dataURL:pngURL,w,h,img:baseImg};
+}
+
 /* ---------- kütüphane / yerleştirme ---------- */
 function addCharToLib(asset,name){ const it={id:nextId(),name:name||'Karakter',asset}; state.charLib.push(it); return it; }
 function placeChar(libItem){
@@ -1147,7 +1189,7 @@ document.getElementById('bgUpload').onclick=()=>document.getElementById('bgFile'
 document.getElementById('bgFile').addEventListener('change',async e=>{
   const files=[...e.target.files]; e.target.value='';
   if(files.length) checkpoint();
-  for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Arkaplan dosyası'); const a=await fileToAsset(f); const it=addBgToLib(a, baseName(f.name)); if(files.length===1) applyBg(it); }catch(err){ showToast(err.message||'Arkaplan okunamadı','err'); } }
+  for(const f of files){ try{ assertFileSize(f,MAX_IMAGE_BYTES,'Arkaplan dosyası'); const a=await fileToBackgroundAsset(f); const it=addBgToLib(a, baseName(f.name)); if(files.length===1) applyBg(it); }catch(err){ showToast(err.message||'Arkaplan okunamadı','err'); } }
   renderBadges(); renderBgTab(); renderStage(); renderPages(); scheduleAutosave(); showToast('Arkaplan eklendi');
 });
 document.getElementById('bgColor').addEventListener('pointerdown',()=>checkpoint());
