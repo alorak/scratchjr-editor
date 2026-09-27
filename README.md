@@ -31,6 +31,9 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - `roundtrip-utils.mjs`: test edilebilir ScratchJr round-trip yardımcıları
 - `ui-utils.mjs`: ortak dialog focus trap/focus-return ve işlem progress altyapısı
 - `file-utils.mjs`: UTF-8 base64, FileReader, image/SVG ve küçük dosya yardımcıları
+- `audio-utils.mjs`: AudioContext yaşam döngüsü, waveform peak ve WAV encoder yardımcıları
+- `audio-recorder.mjs`: mikrofon kayıt, trim, preview ve WAV olarak projeye ekleme kontrolcüsü
+- `sjr-archive-utils.mjs`: güvenli ZIP doğrulama, import resolver, manifest ve rapor yardımcıları
 - `tests/`: metadata, import doğrulama, güvenlik, offline, ses/layer, performans regresyonları ve gerçek-dünya ScratchJr archive fixture testleri
 - `.github/workflows/ci.yml`: syntax + Node testleri ve gerçek headless Chrome smoke testi
 
