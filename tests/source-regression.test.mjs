@@ -4,6 +4,7 @@ import {readFile} from 'node:fs/promises';
 
 const app=await readFile(new URL('../app.js',import.meta.url),'utf8');
 const transfer=await readFile(new URL('../sjr-import-export.mjs',import.meta.url),'utf8');
+const stage=await readFile(new URL('../stage-controller.mjs',import.meta.url),'utf8');
 
 test('critical round-trip guards remain wired',()=>{
   assert.match(app,/MAX_PAGES=4/);
@@ -186,18 +187,18 @@ test('minimal CI runs syntax checks and node tests',async()=>{
 
 test('page thumbnails are cached and high-frequency updates are debounced',async()=>{
   const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
-  assert.match(app,/const pageThumbCache=new WeakMap\(\)/);
-  assert.match(app,/function pageThumbSignature\(page\)/);
-  assert.match(app,/function getPageThumb\(page,w,h\)/);
-  assert.match(app,/function scheduleRenderPages\(delay=80\)/);
-  assert.match(app,/img\.src=getPageThumb\(p,92,69\)/);
-  assert.match(app,/scheduleRenderPages\(0\)/);
+  assert.match(stage,/const pageThumbCache=new WeakMap\(\)/);
+  assert.match(stage,/function pageThumbSignature\(page\)/);
+  assert.match(stage,/function getPageThumb\(page,w,h\)/);
+  assert.match(stage,/function scheduleRenderPages\(delay=80\)/);
+  assert.match(stage,/img\.src=getPageThumb\(page,92,69\)/);
+  assert.match(stage,/scheduleRenderPages\(0\)/);
   assert.match(index,/id="autosaveStatus"/);
   assert.match(index,/id="autosaveStatusText"/);
 });
 
 test('stage navigation avoids rebuilding every library',()=>{
-  assert.match(app,/function renderWorkspace\(opts=\{\}\)/);
+  assert.match(stage,/function renderWorkspace\(opts=\{\}\)/);
   assert.match(app,/if\(name==='stage'\)\{ renderWorkspace\(\); \}/);
   assert.doesNotMatch(app,/if\(name==='stage'\)\{ render\(\); \}/);
 });
@@ -240,7 +241,7 @@ test('autosave generations prevent stale status updates',()=>{
 });
 
 test('manual page renders cancel queued thumbnail work',()=>{
-  assert.match(app,/function renderPages\(\)\{\s*if\(renderPagesTimer\)\{clearTimeout\(renderPagesTimer\);renderPagesTimer=null;\}/);
+  assert.match(stage,/function renderPages\(\)\{\s*if\(renderPagesTimer\)\{win\.clearTimeout\(renderPagesTimer\);renderPagesTimer=null;\}/);
 });
 
 
@@ -286,8 +287,8 @@ test('dialogs share focus trap escape handling and focus restoration',async()=>{
 test('page pickers restore focus even after page controls rerender',()=>{
   assert.match(app,/bgBtn\.dataset\.pageBg=String\(i\)/);
   assert.match(app,/charBtn\.dataset\.pageChar=String\(i\)/);
-  assert.match(app,/querySelector\('\[data-page-bg="'\+target\+'"\]'\)\?\.focus\(\)/);
-  assert.match(app,/querySelector\('\[data-page-char="'\+target\+'"\]'\)\?\.focus\(\)/);
+  assert.match(stage,/querySelector\('\[data-page-bg="'\+target\+'"\]'\)\?\.focus\(\)/);
+  assert.match(stage,/querySelector\('\[data-page-char="'\+target\+'"\]'\)\?\.focus\(\)/);
 });
 
 test('mobile tablet layout exposes horizontal pages and coarse touch targets',async()=>{
@@ -363,4 +364,21 @@ test('SJR transfer controller owns orchestration while app keeps thin UI wiring'
   assert.match(transfer,/async function importProject\(file,progress=\(\)=>\{\}\)/);
   const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
   assert.ok(sw.includes('sjr-import-export.mjs'),'SJR transfer controller missing from service-worker cache');
+});
+
+
+test('stage controller owns page rendering interactions and pickers',async()=>{
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.match(app,/from '\.\/stage-controller\.mjs'/);
+  assert.match(app,/createStageController\(\{/);
+  assert.match(app,/stageController\.bind\(\)/);
+  assert.doesNotMatch(app,/function renderStage\(\)/);
+  assert.doesNotMatch(app,/function renderPages\(\)/);
+  assert.match(stage,/export function createStageController/);
+  assert.match(stage,/function renderStage\(\)/);
+  assert.match(stage,/function renderPages\(\)/);
+  assert.match(stage,/function renderTextPanel\(\)/);
+  assert.match(stage,/function openBgPick\(pageIndex\)/);
+  assert.match(stage,/function openCharPick\(pageIndex\)/);
+  assert.ok(sw.includes('stage-controller.mjs'),'stage controller missing from service-worker cache');
 });
