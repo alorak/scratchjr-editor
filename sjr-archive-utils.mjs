@@ -1,4 +1,6 @@
-export function buildZipIndex(zip,normalizeArchivePath){
+import {normalizeArchivePath} from './roundtrip-utils.mjs';
+
+export function buildZipIndex(zip){
   const byPath=new Map(),byBase=new Map(),files=[];
   zip.forEach((path,file)=>{
     if(file.dir)return;
@@ -23,7 +25,7 @@ export function addImportIssue(report,kind,message){
   report._seen.add(key);report.issues.push({kind,message});
 }
 
-export function resolveZipFile(index,candidates,report,label,normalizeArchivePath){
+export function resolveZipFile(index,candidates,report,label){
   const safeCandidates=[];
   for(const raw of candidates){
     const safe=normalizeArchivePath(raw);
@@ -55,7 +57,7 @@ export function safeDisplayName(value,fallback){
   return text.slice(0,80)||fallback;
 }
 
-export function assertZipSafety(zip,{normalizeArchivePath,maxEntries=500,maxEntryBytes=30*1024*1024,maxTotalBytes=100*1024*1024}={}){
+export function assertZipSafety(zip,{maxEntries=500,maxEntryBytes=30*1024*1024,maxTotalBytes=100*1024*1024}={}){
   let entries=0,total=0,largest=0;
   zip.forEach((path,file)=>{
     if(file.dir)return;
@@ -70,7 +72,7 @@ export function assertZipSafety(zip,{normalizeArchivePath,maxEntries=500,maxEntr
   if(total>maxTotalBytes)throw new Error('Arşivin açılmış boyutu güvenli sınırı aşıyor');
 }
 
-export async function readJsonEntry(entry,label,maxBytes){
+export async function readJsonEntry(entry,label,maxBytes=2*1024*1024){
   const hinted=Number(entry?._data?.uncompressedSize||0);
   if(Number.isFinite(hinted)&&hinted>maxBytes)throw new Error(label+' izin verilen metadata boyutunu aşıyor');
   const text=await entry.async('string');
