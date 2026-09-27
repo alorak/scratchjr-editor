@@ -83,6 +83,28 @@ function countArcPaths(text){
   return count;
 }
 
+function isInlineSvgReference(value){
+  const v=String(value||'').trim();
+  return !v || v.startsWith('#') || /^data:/i.test(v);
+}
+
+function collectUnsafeSvgReferences(src){
+  const unsafe=[];
+  let m;
+  const hrefRe=/\b(?:href|xlink:href)\s*=\s*(["'])(.*?)\1/gis;
+  while((m=hrefRe.exec(src))!==null){
+    const value=m[2].trim();
+    if(!isInlineSvgReference(value)) unsafe.push(value);
+  }
+  const urlRe=/url\(\s*(["']?)(.*?)\1\s*\)/gis;
+  while((m=urlRe.exec(src))!==null){
+    const value=m[2].trim();
+    if(!isInlineSvgReference(value)) unsafe.push(value);
+  }
+  if(/@import\b/i.test(src)) unsafe.push('@import');
+  return [...new Set(unsafe)];
+}
+
 export function inspectSvgCompatibility(text){
   const src=String(text||'');
   const vb=src.match(/\bviewBox\s*=\s*(["'])\s*([^"']+)\1/i);
@@ -111,20 +133,27 @@ export function inspectSvgCompatibility(text){
   const hasEmbeddedImage=/<image(?:\s|>)/i.test(src);
   const transformCount=(src.match(/\btransform\s*=/gi)||[]).length;
   const styleCount=(src.match(/\bstyle\s*=/gi)||[]).length;
+  const styleElementCount=countTag(src,'style');
+  const scriptCount=countTag(src,'script');
   const arcPaths=countArcPaths(src);
   const rootPresentation=hasSvgRootPresentation(src);
-  const externalRefs=/\b(?:href|xlink:href)\s*=\s*(["'])\s*(?:https?:|\/\/)/i.test(src);
+  const unsafeReferences=collectUnsafeSvgReferences(src);
+  const externalRefs=unsafeReferences.length>0;
+  const activeContent=scriptCount>0;
   const reasons=[];
   if(transformCount) reasons.push('transform');
   if(rootPresentation) reasons.push('root-presentation');
   if(styleCount) reasons.push('style-attribute');
+  if(styleElementCount) reasons.push('style-element');
   if(arcPaths) reasons.push('arc-command');
   if(unsupportedCount) reasons.push('unsupported-elements');
   if(effectCount) reasons.push('paint-effects');
   if(viewBoxOriginNonZero) reasons.push('nonzero-viewbox-origin');
   if(externalRefs) reasons.push('external-reference');
+  if(activeContent) reasons.push('active-content');
   return {
-    hasEmbeddedImage,transformCount,styleCount,arcPaths,rootPresentation,externalRefs,
+    hasEmbeddedImage,transformCount,styleCount,styleElementCount,scriptCount,arcPaths,rootPresentation,
+    externalRefs,unsafeReferences,activeContent,
     viewBoxValid,viewBoxOriginNonZero,viewBox:vbNums,
     unsupportedTags,unsupportedCount,effectTags,effectCount,
     safeDirectVector:!hasEmbeddedImage&&reasons.length===0,
