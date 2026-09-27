@@ -1,4 +1,6 @@
 import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,normalizeArchivePath,validateScratchJrProject,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {createDialogManager,startOperation} from './ui-utils.mjs';
+import {assertFileSize,b64,readAsDataURL,readAsText,loadImage,svgDims,wrapRasterSvg,escapeHtml,colorToHex} from './file-utils.mjs';
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
@@ -98,68 +100,7 @@ document.addEventListener('keydown',e=>{
 });
 
 /* ---------- ortak dialog / progress yardımcıları ---------- */
-const dialogState=new WeakMap(),dialogStack=[];
-function dialogFocusables(overlay){
-  return [...overlay.querySelectorAll('button:not([disabled]),[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])')]
-    .filter(el=>!el.hidden&&el.offsetParent!==null);
-}
-function showDialog(overlay,initialFocus,onEscape){
-  if(!overlay) return;
-  const opener=document.activeElement instanceof HTMLElement?document.activeElement:null;
-  dialogState.set(overlay,{opener,onEscape});
-  const oldIndex=dialogStack.indexOf(overlay); if(oldIndex>=0) dialogStack.splice(oldIndex,1);
-  dialogStack.push(overlay);
-  overlay.classList.add('show');
-  requestAnimationFrame(()=>{
-    const target=initialFocus||dialogFocusables(overlay)[0]||overlay;
-    if(target===overlay&&!overlay.hasAttribute('tabindex')) overlay.setAttribute('tabindex','-1');
-    target.focus?.();
-  });
-}
-function hideDialog(overlay,restoreFocus=true){
-  if(!overlay) return;
-  overlay.classList.remove('show');
-  const i=dialogStack.lastIndexOf(overlay); if(i>=0) dialogStack.splice(i,1);
-  const stateForDialog=dialogState.get(overlay);
-  dialogState.delete(overlay);
-  if(restoreFocus&&stateForDialog?.opener?.isConnected) requestAnimationFrame(()=>stateForDialog.opener.focus());
-}
-document.addEventListener('keydown',e=>{
-  const overlay=dialogStack[dialogStack.length-1];
-  if(!overlay||!overlay.classList.contains('show')) return;
-  if(e.key==='Escape'){
-    e.preventDefault(); e.stopPropagation();
-    const close=dialogState.get(overlay)?.onEscape;
-    if(close) close(); else hideDialog(overlay);
-    return;
-  }
-  if(e.key!=='Tab') return;
-  const items=dialogFocusables(overlay);
-  if(!items.length){e.preventDefault();overlay.focus();return;}
-  const first=items[0],last=items[items.length-1];
-  if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}
-  else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}
-},true);
-
-function startOperation(title){
-  const box=document.getElementById('operationProgress');
-  const titleEl=document.getElementById('operationProgressTitle');
-  const pctEl=document.getElementById('operationProgressPct');
-  const bar=document.getElementById('operationProgressBar');
-  const label=document.getElementById('operationProgressLabel');
-  box.hidden=false; titleEl.textContent=title;
-  const update=(percent,text)=>{
-    const p=Math.max(0,Math.min(100,Math.round(Number(percent)||0)));
-    const nextText=text||'İşleniyor…';
-    pctEl.textContent=p+'%'; bar.style.width=p+'%';
-    if(label.textContent!==nextText) label.textContent=nextText;
-  };
-  update(0,'Hazırlanıyor…');
-  return {
-    update,
-    close(){box.hidden=true;bar.style.width='0%';pctEl.textContent='0%';}
-  };
-}
+const {showDialog,hideDialog}=createDialogManager(document);
 
 /* ---------- autosave (IndexedDB) ---------- */
 const AUTOSAVE_DB='sjr-atelier', AUTOSAVE_STORE='projects', AUTOSAVE_KEY='autosave-v1';
@@ -262,9 +203,6 @@ async function restoreAutosave(){
 }
 
 /* ---------- dosya okuma ---------- */
-function assertFileSize(file,maxBytes,label){
-  if(file && file.size>maxBytes) throw new Error((label||'Dosya')+' çok büyük (maks. '+Math.round(maxBytes/MB)+' MB)');
-}
 function assertZipSafety(zip){
   let entries=0,total=0,largest=0;
   zip.forEach((p,zf)=>{
@@ -286,22 +224,6 @@ async function readJsonEntry(entry,label,maxBytes=MAX_METADATA_BYTES){
   if(new TextEncoder().encode(text).length>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
   try{return JSON.parse(text);}catch(e){throw new Error(label+' geçerli JSON değil');}
 }
-function b64(value){
-  const bytes=new TextEncoder().encode(String(value??''));
-  let binary='';
-  const CHUNK=0x8000;
-  for(let i=0;i<bytes.length;i+=CHUNK) binary+=String.fromCharCode(...bytes.subarray(i,i+CHUNK));
-  return btoa(binary);
-}
-function readAsDataURL(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(f);});}
-function readAsText(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsText(f);});}
-function loadImage(src){return new Promise((res,rej)=>{const im=new Image();im.onload=()=>res(im);im.onerror=rej;im.src=src;});}
-function svgDims(text){try{const svg=new DOMParser().parseFromString(text,'image/svg+xml').querySelector('svg');
-  let w=parseFloat(svg.getAttribute('width')),h=parseFloat(svg.getAttribute('height'));
-  if(!w||!h){const vb=(svg.getAttribute('viewBox')||'').split(/[ ,]+/).map(Number);if(vb.length===4){w=vb[2];h=vb[3];}}
-  return {w:w||150,h:h||150};}catch(e){return {w:150,h:150};}}
-function wrapRasterSvg(dataURL,w,h){return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><image width="${w}" height="${h}" href="${dataURL}" xlink:href="${dataURL}"/></svg>`;}
-
 /* Inkscape/harici SVG'yi ScratchJr'ın beklediği sade path-tabanlı formata normalleştirir.
    pxW/pxH: tarayıcının mm→px dönüşümünden gelen gerçek piksel boyutları
    Döndürür: {text, w, h} veya null. w/h = SVG'nin kanonik boyutları (ScratchJr'ın
@@ -1111,7 +1033,6 @@ function renderSelPanel(){
   }
 }
 function getSel(){ return state.pages[state.current].chars.find(c=>c.id===state.selected); }
-function escapeHtml(s){ return (s||'').replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
 
 /* ---------- sürükleme ---------- */
 function attachDrag(el,c){
@@ -1141,16 +1062,6 @@ function attachDrag(el,c){
 
 /* ---------- yazı paneli ---------- */
 const TEXT_COLORS=['#1a1a1a','#e84040','#f08030','#e8c000','#40b840','#2880e0','#8f56e3','#e860a0'];
-
-function colorToHex(color){
-  if(!color) return '#1a1a1a';
-  const rgb=color.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/);
-  if(rgb) return '#'+[rgb[1],rgb[2],rgb[3]].map(n=>parseInt(n).toString(16).padStart(2,'0')).join('');
-  if(color.startsWith('#')){
-    return color.length===4?'#'+color[1]+color[1]+color[2]+color[2]+color[3]+color[3]:color;
-  }
-  return '#1a1a1a';
-}
 
 function getSelText(){ return (state.pages[state.current].texts||[]).find(t=>t.id===state.selectedText); }
 
