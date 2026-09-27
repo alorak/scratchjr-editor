@@ -1,0 +1,43 @@
+{
+  "id": "fixture-project",
+  "name": "Roundtrip Fixture",
+  "customDataField": {"keep": true},
+  "json": {
+    "pages": ["page 1", "page 2", "page 3"],
+    "currentPage": "page 3",
+    "customProjectField": "keep-me",
+    "page 1": {
+      "sprites": ["Cat 1", "Text 1"],
+      "layers": ["Text 1", "Cat 1"],
+      "customPageField": 42,
+      "Cat 1": {
+        "type": "sprite",
+        "id": "Cat 1",
+        "md5": "cat.svg",
+        "scripts": [[["onflag"], ["forward", 1]]],
+        "sounds": ["pop.mp3", "cat.wav"],
+        "customSpriteField": "keep"
+      },
+      "Text 1": {
+        "type": "text",
+        "id": "Text 1",
+        "str": "Merhaba"
+      }
+    },
+    "page 2": {
+      "sprites": [],
+      "layers": []
+    },
+    "page 3": {
+      "sprites": ["Dog 1"],
+      "layers": ["Dog 1"],
+      "Dog 1": {
+        "type": "sprite",
+        "id": "Dog 1",
+        "md5": "dog.svg",
+        "scripts": [[["ontouch"], ["hop"]]],
+        "sounds": ["pop.mp3", "dog.wav"]
+      }
+    }
+  }
+}
