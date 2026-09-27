@@ -1,3 +1,7 @@
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
+}
+
 import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 
 "use strict";
@@ -420,22 +424,9 @@ function normalizeSvgForChar(svgText, pxW, pxH){
 }
 
 /* ---------- ImageTracer (gerçek vektör) — tembel yükleme ---------- */
-let tracerLoading=null;
 function loadTracer(){
   if(window.ImageTracer) return Promise.resolve();
-  if(tracerLoading) return tracerLoading;
-  const urls=[
-    'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js',
-    'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-    'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js'
-  ];
-  tracerLoading=new Promise((res,rej)=>{let i=0;(function go(){
-    if(i>=urls.length) return rej(new Error('tracer yüklenemedi'));
-    const s=document.createElement('script');s.src=urls[i++];
-    s.onload=()=>window.ImageTracer?res():go(); s.onerror=go;
-    document.head.appendChild(s);
-  })();});
-  return tracerLoading;
+  return Promise.reject(new Error('Yerel ImageTracer yüklenemedi'));
 }
 async function rasterToVectorSvg(dataURL,colors){
   await loadTracer();
@@ -828,7 +819,7 @@ function renderPageThumbSync(page,w,h){
   }
   for(const t of (page.texts||[])){
     const fontSize=Math.max(6,Math.round(t.fontsize*w/STAGE_W));
-    ctx.font=`600 ${fontSize}px Fredoka,sans-serif`;
+    ctx.font=`600 ${fontSize}px ui-rounded, system-ui, sans-serif`;
     ctx.fillStyle=t.color||'#1a1a1a';
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*w,t.fy*h);}catch(e){}
@@ -1560,7 +1551,7 @@ async function renderThumb(page){
   for(const c of page.chars){ const dispW=c.sizePct/100*STAGE_W,dispH=dispW*c.aspect,x=c.fx*STAGE_W,y=c.fy*STAGE_H;
     ctx.save(); ctx.translate(x,y); if(c.flip)ctx.scale(-1,1); try{ctx.drawImage(c.asset.img,-dispW/2,-dispH/2,dispW,dispH);}catch(e){} ctx.restore(); }
   for(const t of (page.texts||[])){
-    ctx.font=`600 ${t.fontsize||16}px Fredoka,sans-serif`;
+    ctx.font=`600 ${t.fontsize||16}px ui-rounded, system-ui, sans-serif`;
     ctx.fillStyle=t.color||'#1a1a1a';
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*STAGE_W,t.fy*STAGE_H);}catch(e){}
