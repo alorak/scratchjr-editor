@@ -1739,12 +1739,13 @@ async function importSRJ(file){
   if(!dataFile) throw new Error('Geçerli bir .srj değil: data.json bulunamadı');
   const prefix=dataFile.name.replace(/data\.json$/i,'');           // ör. "project/"
   const data=JSON.parse(await dataFile.async('string'));
-  const J=(data && data.json) ? data.json : (data||{});
+  const wrappedData=!!(data && data.json);
+  const J=wrappedData ? data.json : (data||{});
   const pageKeys=Array.isArray(J.pages)?J.pages:[];
   if(pageKeys.length>MAX_PAGES) throw new Error('Bu proje '+pageKeys.length+' sayfa içeriyor. ScratchJr en fazla '+MAX_PAGES+' sayfa destekler.');
 
   const ns={ pages:[], current:resolveCurrentPageIndex(J.currentPage,pageKeys), charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null,
-    sjrDataMeta:dataMetaWithoutJson(data), sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys) };
+    sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{}, sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys) };
   const charLibByFile=new Map();   // karakter dosyası -> kütüphane öğesi
   const bgLibByFile=new Map();     // arkaplan dosyası -> kütüphane öğesi
 
