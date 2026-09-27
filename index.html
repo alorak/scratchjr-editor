@@ -562,7 +562,7 @@
           </svg>
           <span id="srecTitle">Ses Kaydı: A</span>
         </h3>
-        <button class="srec-close" id="srecClose">✕</button>
+        <button class="srec-close" id="srecClose" aria-label="Ses kayıt penceresini kapat">✕</button>
       </div>
       <div class="srec-viz" id="srecViz">
         <canvas id="srecCanvas"></canvas>
@@ -654,7 +654,7 @@
     <div class="head">
       <div class="icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#fff" stroke-width="2"/><line x1="12" y1="8" x2="12" y2="8.5" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/><line x1="12" y1="11" x2="12" y2="16" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg></div>
       <h3 id="infoTitle">SVG Bilgileri</h3>
-      <button class="close" id="infoClose">×</button>
+      <button class="close" id="infoClose" aria-label="SVG bilgi penceresini kapat">×</button>
     </div>
     <div class="info-modal-body">
       <div id="infoStats"></div>
@@ -687,7 +687,7 @@
   <div class="pick-modal">
     <div class="pick-head">
       <h3 id="bgPickTitle">Arkaplan Seç</h3>
-      <button class="close" id="bgPickClose">×</button>
+      <button class="close" id="bgPickClose" aria-label="Arkaplan seçiciyi kapat">×</button>
     </div>
     <div class="pick-body">
       <div class="pick-color-row">
@@ -705,7 +705,7 @@
   <div class="pick-modal">
     <div class="pick-head">
       <h3 id="charPickTitle">Karakter Ekle</h3>
-      <button class="close" id="charPickClose">×</button>
+      <button class="close" id="charPickClose" aria-label="Karakter seçiciyi kapat">×</button>
     </div>
     <div class="pick-body">
       <div class="pick-grid" id="charPickGrid"></div>
@@ -729,6 +729,8 @@ const state={
   sounds:[],    // {id,name,buf,ext}
   selected:null,
   selectedText:null,
+  sjrDataMeta:null,
+  sjrJsonMeta:null,
 };
 function newPage(){ return { chars:[], texts:[], bg:{ mode:'color', color:'#eaf4ff', asset:null, bgId:null }, sjrMeta:null }; }
 let uid=1; const nextId=()=>'i'+(uid++);
@@ -755,6 +757,7 @@ function snapshotState(){
     bgLib:state.bgLib.map(x=>({...x})),
     sounds:state.sounds.map(x=>({...x})),
     selected:state.selected, selectedText:state.selectedText,
+    sjrDataMeta:cloneJson(state.sjrDataMeta), sjrJsonMeta:cloneJson(state.sjrJsonMeta),
     projectName:document.getElementById('pname').value
   };
 }
@@ -774,7 +777,8 @@ function restoreSnapshot(s){
   Object.assign(state,{
     pages:s.pages.map(clonePageState), current:s.current,
     charLib:s.charLib.map(x=>({...x})), bgLib:s.bgLib.map(x=>({...x})),
-    sounds:s.sounds.map(x=>({...x})), selected:s.selected, selectedText:s.selectedText
+    sounds:s.sounds.map(x=>({...x})), selected:s.selected, selectedText:s.selectedText,
+    sjrDataMeta:cloneJson(s.sjrDataMeta), sjrJsonMeta:cloneJson(s.sjrJsonMeta)
   });
   document.getElementById('pname').value=s.projectName||'Benim Projem';
   historyState.restoring=false;
@@ -838,6 +842,7 @@ function autosavePayload(){
     charLib:state.charLib.map(x=>({...x,asset:plainAsset(x.asset)})),
     bgLib:state.bgLib.map(x=>({...x,asset:plainAsset(x.asset)})),
     sounds:state.sounds.map(s=>{const {_waveData,_duration,...rest}=s;return rest;}),
+    sjrDataMeta:cloneJson(state.sjrDataMeta), sjrJsonMeta:cloneJson(state.sjrJsonMeta),
     pages:state.pages.map(p=>({
       ...p, sjrMeta:cloneJson(p.sjrMeta),
       bg:{...p.bg,asset:null},
@@ -870,7 +875,10 @@ async function restoreAutosave(){
     chars:(p.chars||[]).map(x=>({...x,asset:charMap.get(x.libId)||null})).filter(x=>x.asset),
     texts:(p.texts||[])
   }));
-  Object.assign(state,{pages,current:Math.max(0,Math.min(saved.current||0,pages.length-1)),charLib,bgLib,sounds:saved.sounds||[],selected:null,selectedText:null});
+  Object.assign(state,{pages,current:Math.max(0,Math.min(saved.current||0,pages.length-1)),charLib,bgLib,sounds:saved.sounds||[],selected:null,selectedText:null,
+    sjrDataMeta:cloneJson(saved.sjrDataMeta),sjrJsonMeta:cloneJson(saved.sjrJsonMeta)});
+  const ids=[...charLib,...bgLib,...pages.flatMap(p=>[...p.chars,...p.texts])].map(x=>String(x.id||'')).map(x=>/^i(\d+)$/.exec(x)).filter(Boolean).map(m=>+m[1]);
+  uid=Math.max(uid,ids.length?Math.max(...ids)+1:uid);
   document.getElementById('pname').value=saved.projectName||'Benim Projem';
   return true;
 }
@@ -1386,7 +1394,12 @@ function renderSounds(){
     const dur=document.createElement('span'); dur.className='snd-dur';
     dur.textContent=fmtDur(s._duration);
     const x=document.createElement('button'); x.className='x'; x.textContent='×'; x.setAttribute('aria-label',s.name+' sesini sil');
-    x.onclick=async()=>{ const ok=await confirmModal({title:'Sesi sil',bodyHtml:`<b>${escapeHtml(s.name)}</b> silinsin mi?`,okText:'Evet, sil',cancelText:'Vazgeç'}); if(!ok)return; checkpoint(); stopCurrentSound(); state.sounds=state.sounds.filter(z=>z!==s); render(); };
+    x.onclick=async()=>{ const ok=await confirmModal({title:'Sesi sil',bodyHtml:`<b>${escapeHtml(s.name)}</b> silinsin mi?`,okText:'Evet, sil',cancelText:'Vazgeç'}); if(!ok)return; checkpoint(); stopCurrentSound();
+      if(s.sourceFile){
+        const dead=String(s.sourceFile).replace(/^.*[\\/]/,'');
+        state.pages.forEach(p=>p.chars.forEach(ch=>{if(ch.sjrMeta&&Array.isArray(ch.sjrMeta.sounds)) ch.sjrMeta.sounds=ch.sjrMeta.sounds.filter(ref=>String(ref).replace(/^.*[\\/]/,'')!==dead);}));
+      }
+      state.sounds=state.sounds.filter(z=>z!==s); render(); };
     top.append(play,nm,dur,x);
 
     // waveform canvas
@@ -1965,8 +1978,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   function startDrag(handle,e){
     dragHandle=handle; dragStartX=e.clientX;
     dragStartPct=handle==='L'?trimStart:trimEnd;
-    document.addEventListener('mousemove',onDrag);
-    document.addEventListener('mouseup',endDrag);
+    if(e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
+    document.addEventListener('pointermove',onDrag);
+    document.addEventListener('pointerup',endDrag);
+    document.addEventListener('pointercancel',endDrag);
     e.preventDefault();
   }
   function onDrag(e){
@@ -1978,11 +1993,12 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   }
   function endDrag(){
     dragHandle=null;
-    document.removeEventListener('mousemove',onDrag);
-    document.removeEventListener('mouseup',endDrag);
+    document.removeEventListener('pointermove',onDrag);
+    document.removeEventListener('pointerup',endDrag);
+    document.removeEventListener('pointercancel',endDrag);
   }
-  tl.onmousedown=e=>startDrag('L',e);
-  tr.onmousedown=e=>startDrag('R',e);
+  tl.onpointerdown=e=>startDrag('L',e);
+  tr.onpointerdown=e=>startDrag('R',e);
 
   // WAV encoder
   function toWav(buf){
@@ -2023,6 +2039,8 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     stopPlayback();
     cancelAnimationFrame(animId);
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+    audio.removeAttribute('src');
     hideTrim();
     addBtn.style.display='none';
   }
@@ -2124,8 +2142,9 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
       const trimmed=await off.startRendering();
       const wav=toWav(trimmed);
       const name=document.getElementById('srecTitle').textContent;
+      checkpoint();
       state.sounds.push({id:nextId(),name,buf:wav,ext:'wav'});
-      renderBadges(); renderSounds();
+      renderBadges(); renderSounds(); scheduleAutosave();
       showToast('Ses projeye eklendi');
       closeModal();
     }catch(e){
@@ -2139,6 +2158,7 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   document.getElementById('srecClose').onclick=closeModal;
   overlay.addEventListener('click',e=>{if(e.target===overlay)closeModal();});
   recBtn.onclick=()=>{if(isRecording)stopRec(true);else startRec();};
+  document.addEventListener('keydown',e=>{if(e.key==='Escape'&&overlay.classList.contains('show')) closeModal();});
 })();
 
 
@@ -2228,6 +2248,7 @@ async function exportSRJ(pagesArg){
       const raw=String(ref||''), base=raw.replace(/^.*[\\/]/,'');
       return soundOutBySource.get(raw)||soundOutBySource.get(base)||raw;
     };
+    const newSoundFiles=state.sounds.map((s,i)=>s.sourceFile?null:soundFiles[i]).filter(Boolean);
     const charCache=new Map();
     function charFile(asset){ if(charCache.has(asset.svgText))return charCache.get(asset.svgText);
       const fn=md5str(asset.svgText)+'.svg'; charsDir.file(fn,asset.svgText); charCache.set(asset.svgText,fn); return fn; }
@@ -2235,7 +2256,11 @@ async function exportSRJ(pagesArg){
     function backgroundSvg(asset){ return asset&&asset.vector&&asset.svgText ? asset.svgText : coverSvg(asset); }
     function colorSvg(color){ return `<svg xmlns="http://www.w3.org/2000/svg" width="${STAGE_W}" height="${STAGE_H}" viewBox="0 0 ${STAGE_W} ${STAGE_H}"><rect width="${STAGE_W}" height="${STAGE_H}" fill="${color}"/></svg>`; }
 
-    const jsonObj={ pages:[], currentPage:'page 1' }; let firstThumb=null;
+    const jsonObj=state.sjrJsonMeta ? cloneJson(state.sjrJsonMeta) : {};
+    const oldPageKeys=Array.isArray(jsonObj.pages)?[...jsonObj.pages]:[];
+    oldPageKeys.forEach(k=>{ delete jsonObj[k]; });
+    jsonObj.pages=[]; jsonObj.currentPage='page '+Math.min(pages.length,Math.max(1,state.current+1));
+    let firstThumb=null;
     for(let i=0;i<pages.length;i++){
       const page=pages[i], key='page '+(i+1); jsonObj.pages.push(key);
       let bgName;
@@ -2262,7 +2287,9 @@ async function exportSRJ(pagesArg){
           defaultScale:scale,xcoor,ycoor,cx:Math.round(w/2),cy:Math.round(h/2),w,h,
           homex:xcoor,homey:ycoor,homescale:scale,homeshown:sp.homeshown!==false,homeflip:!!c.flip});
         sp.scripts=Array.isArray(sp.scripts)?sp.scripts:[];
-        sp.sounds=Array.isArray(sp.sounds)?sp.sounds.map(mapSoundRef):['pop.mp3',...soundFiles];
+        sp.sounds=Array.isArray(sp.sounds)
+          ? [...new Set([...sp.sounds.map(mapSoundRef),...newSoundFiles])]
+          : ['pop.mp3',...soundFiles];
         pageObj[spId]=sp;
       });
       (page.texts||[]).forEach((t,ti)=>{
@@ -2301,8 +2328,14 @@ async function exportSRJ(pagesArg){
     const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
     root.file('srjlib.json', JSON.stringify({backgrounds:bgManifest, sounds:sndManifest}));
 
-    const data={ id:String(Math.floor(Date.now()/1000)), name, ctime:new Date().toISOString(), mtime:String(Date.now()),
-      version:'Webv01', isgift:'0', deleted:'NO', thumbnail:{pagecount:pages.length,md5:firstThumb}, json:jsonObj };
+    const data=state.sjrDataMeta ? cloneJson(state.sjrDataMeta) : {};
+    if(!data.id) data.id=String(Math.floor(Date.now()/1000));
+    if(!data.ctime) data.ctime=new Date().toISOString();
+    if(!data.version) data.version='Webv01';
+    if(data.isgift==null) data.isgift='0';
+    if(data.deleted==null) data.deleted='NO';
+    data.name=name; data.mtime=String(Date.now());
+    data.thumbnail={pagecount:pages.length,md5:firstThumb}; data.json=jsonObj;
     root.file('data.json', JSON.stringify(data));
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
     const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
@@ -2365,7 +2398,8 @@ async function importSRJ(file){
   const pageKeys=Array.isArray(J.pages)?J.pages:[];
   if(pageKeys.length>MAX_PAGES) throw new Error('Bu proje '+pageKeys.length+' sayfa içeriyor. ScratchJr en fazla '+MAX_PAGES+' sayfa destekler.');
 
-  const ns={ pages:[], current:0, charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null };
+  const ns={ pages:[], current:0, charLib:[], bgLib:[], sounds:[], selected:null, selectedText:null,
+    sjrDataMeta:cloneJson(data), sjrJsonMeta:cloneJson(J) };
   const charLibByFile=new Map();   // karakter dosyası -> kütüphane öğesi
   const bgLibByFile=new Map();     // arkaplan dosyası -> kütüphane öğesi
 
@@ -2752,6 +2786,11 @@ function addCharToPage(pageIdx,libItem){
 }
 document.getElementById('charPickClose').onclick=closeCharPick;
 document.getElementById('charPickOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('charPickOverlay')) closeCharPick(); });
+document.addEventListener('keydown',e=>{
+  if(e.key!=='Escape') return;
+  document.getElementById('infoOverlay').classList.remove('show');
+  closeBgPick(); closeCharPick();
+});
 
 /* ---------- toast ---------- */
 let toastTimer=null;
