@@ -269,12 +269,13 @@ test('tabs use roving keyboard navigation and tabpanel semantics',async()=>{
 
 test('dialogs share focus trap escape handling and focus restoration',async()=>{
   const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
+  const recorder=await readFile(new URL('../audio-recorder.mjs',import.meta.url),'utf8');
   assert.match(ui,/const dialogState=new WeakMap\(\),dialogStack=\[\]/);
   assert.match(ui,/function showDialog\(overlay,initialFocus,onEscape\)/);
   assert.match(ui,/function hideDialog\(overlay,restoreFocus=true\)/);
   assert.match(ui,/if\(e\.key!=='Tab'\) return/);
   assert.match(ui,/stateForDialog\?\.opener\?\.isConnected/);
-  assert.match(app,/showDialog\(overlay,recBtn,closeModal\)/);
+  assert.match(recorder,/showDialog\(overlay,recBtn,close\)/);
   assert.match(app,/showDialog\(ov,document\.getElementById\('importReportClose'\),closeImportReport\)/);
   assert.match(app,/showDialog\(ov,okBtn,\(\)=>close\(false\)\)/);
   assert.doesNotMatch(app,/document\.addEventListener\('keydown',e=>\{if\(e\.key==='Escape'&&overlay\.classList\.contains\('show'\)\)/);
