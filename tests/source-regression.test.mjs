@@ -256,7 +256,7 @@ test('import and export expose staged operation progress',async()=>{
   assert.match(transfer,/async function importProject\(file,progress=\(\)=>\{\}\)/);
   assert.match(transfer,/Arşiv açılıyor…/);
   assert.match(transfer,/Sayfa '\+\(i\+1\)\+' \/ '\+pages\.length\+' hazırlandı/);
-  assert.match(transfer,/zip\.generateAsync\(\{type:'blob',compression:'DEFLATE'\},meta=>/);
+  assert.match(transfer,/zip\.generateAsync\(\{type:zipOutputType,compression:'DEFLATE'\},meta=>/);
 });
 
 test('tabs use roving keyboard navigation and tabpanel semantics',async()=>{
