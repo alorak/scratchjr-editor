@@ -12,8 +12,9 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - `.sjr` içe/dışa aktarma
 - Import edilmiş projelerde sprite scriptleri, sprite-başına ses ilişkileri, layer sırası ve bilinmeyen metadata alanlarını koruma
 - Undo / redo
-- IndexedDB tabanlı otomatik kayıt
+- IndexedDB tabanlı otomatik kayıt; kayıt hataları kullanıcıya bildirilir
 - Klavye ve dokunmatik kullanım iyileştirmeleri
+- Görsel, ses ve .sjr importlarında boyut/arşiv güvenlik sınırları
 
 ## Dosya yapısı
 
@@ -37,7 +38,7 @@ Node.js ile ek bağımlılık kurmadan:
 npm test
 ```
 
-Testler; script/metadata koruması, sprite-başına ses ilişkileri, layer sırası, transform algılama ve kritik kaynak regresyonlarını kontrol eder.
+Testler; fixture tabanlı script/metadata koruması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, imported raster/vector arkaplan seçimi, transform/root-style algılama ve kritik kaynak regresyonlarını kontrol eder.
 
 ## ScratchJr uyumluluğu
 
