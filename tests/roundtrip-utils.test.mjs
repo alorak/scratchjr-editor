@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {
-  cloneJson,hasSvgTransform,hasSvgRootPresentation,
+  cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,
   dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,
   resolveCurrentPageIndex,selectBackgroundSvg,
   mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder
@@ -89,4 +89,33 @@ test('fixture sprite behavior survives metadata merge',()=>{
 
 test('cloneJson deep-clones metadata',()=>{
   const a={x:{y:1}}; const b=cloneJson(a); b.x.y=2; assert.equal(a.x.y,1);
+});
+
+test('SVG policy routes arcs and complex geometry to fallback',()=>{
+  const arc=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><path d="M1 1 A 4 4 0 0 1 8 8"/></svg>');
+  assert.equal(arc.arcPaths,1);
+  assert.equal(arc.safeDirectVector,false);
+  assert.ok(arc.fallbackReasons.includes('arc-command'));
+
+  const rect=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8"/></svg>');
+  assert.equal(rect.unsupportedTags.rect,1);
+  assert.equal(rect.safeDirectVector,false);
+  assert.ok(rect.fallbackReasons.includes('unsupported-elements'));
+});
+
+test('SVG policy catches root styles, non-zero viewBox origin and external refs',()=>{
+  const root=inspectSvgCompatibility('<svg fill="#f00" viewBox="5 5 10 10"><path d="M5 5L6 6"/></svg>');
+  assert.equal(root.rootPresentation,true);
+  assert.equal(root.viewBoxOriginNonZero,true);
+  assert.equal(root.safeDirectVector,false);
+
+  const external=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><image href="https://example.com/a.png"/></svg>');
+  assert.equal(external.externalRefs,true);
+  assert.equal(external.safeDirectVector,false);
+});
+
+test('simple path-only SVG remains eligible for direct vector normalization',()=>{
+  const info=inspectSvgCompatibility('<svg viewBox="0 0 10 10"><path fill="#f00" d="M0 0L10 0L10 10Z"/></svg>');
+  assert.equal(info.safeDirectVector,true);
+  assert.deepEqual(info.fallbackReasons,[]);
 });
