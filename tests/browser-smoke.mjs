@@ -1,8 +1,9 @@
 import {createServer} from 'node:http';
-import {readFile,stat} from 'node:fs/promises';
+import {readFile,stat,mkdtemp,rm} from 'node:fs/promises';
 import {spawn,spawnSync} from 'node:child_process';
 import {extname,join,normalize} from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {tmpdir} from 'node:os';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
 const mime={
@@ -19,6 +20,7 @@ function findChrome(){
   throw new Error('Headless Chrome/Chromium bulunamadı');
 }
 
+const requests=[];
 const server=createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://127.0.0.1');
@@ -29,44 +31,129 @@ const server=createServer(async(req,res)=>{
     const info=await stat(path);
     if(!info.isFile()) throw new Error('not file');
     const body=await readFile(path);
+    requests.push({path:url.pathname,status:200});
     res.writeHead(200,{'Content-Type':mime[extname(path)]||'application/octet-stream','Cache-Control':'no-store'});
     res.end(body);
   }catch{
+    requests.push({path:req.url,status:404});
     res.writeHead(404); res.end('Not found');
   }
 });
 
+function wait(ms){return new Promise(resolve=>setTimeout(resolve,ms));}
+
+class CdpClient{
+  constructor(ws){
+    this.ws=ws; this.nextId=1; this.pending=new Map(); this.events=[];
+    ws.addEventListener('message',event=>{
+      const msg=JSON.parse(event.data);
+      if(msg.id){
+        const p=this.pending.get(msg.id);
+        if(!p) return;
+        this.pending.delete(msg.id);
+        if(msg.error) p.reject(new Error(msg.error.message||JSON.stringify(msg.error)));
+        else p.resolve(msg.result||{});
+      }else this.events.push(msg);
+    });
+  }
+  send(method,params={}){
+    const id=this.nextId++;
+    return new Promise((resolve,reject)=>{
+      this.pending.set(id,{resolve,reject});
+      this.ws.send(JSON.stringify({id,method,params}));
+    });
+  }
+}
+
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const {port}=server.address();
-const url=`http://127.0.0.1:${port}/index.html?smoke=1`;
+const pageUrl=`http://127.0.0.1:${port}/index.html?smoke=1`;
 const chrome=findChrome();
+const profile=await mkdtemp(join(tmpdir(),'sjr-smoke-'));
 const args=[
   '--headless=new','--no-sandbox','--disable-gpu','--disable-dev-shm-usage',
   '--disable-background-networking','--disable-default-apps','--no-first-run',
-  '--virtual-time-budget=3500','--dump-dom',url
+  '--remote-debugging-port=0','--remote-allow-origins=*',
+  '--user-data-dir='+profile,'about:blank'
 ];
 
-const child=spawn(chrome,args,{stdio:['ignore','pipe','pipe']});
-let stdout='',stderr='';
-child.stdout.on('data',d=>stdout+=d);
-child.stderr.on('data',d=>stderr+=d);
-const code=await new Promise((resolve,reject)=>{
-  const timer=setTimeout(()=>{child.kill('SIGKILL');reject(new Error('Browser smoke timeout'));},15000);
+const child=spawn(chrome,args,{stdio:['ignore','ignore','pipe']});
+let stderr='',devtoolsPort=null;
+const devtoolsReady=new Promise((resolve,reject)=>{
+  const timer=setTimeout(()=>reject(new Error('Chrome DevTools endpoint timeout')),8000);
+  child.stderr.on('data',d=>{
+    const text=d.toString(); stderr+=text;
+    const m=text.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d+)\//);
+    if(m&&!devtoolsPort){devtoolsPort=Number(m[1]);clearTimeout(timer);resolve();}
+  });
   child.on('error',err=>{clearTimeout(timer);reject(err);});
-  child.on('close',code=>{clearTimeout(timer);resolve(code);});
+  child.on('exit',code=>{if(!devtoolsPort){clearTimeout(timer);reject(new Error('Chrome exited before DevTools: '+code));}});
 });
-server.close();
 
-if(code!==0) throw new Error(`Chrome exit ${code}: ${stderr.slice(-2000)}`);
-const checks=[
-  ['app boot marker',/data-app-ready="true"/.test(stdout)],
-  ['initial page rendered',/class="page-row"/.test(stdout)],
-  ['autosave status ready',/id="autosaveStatusText">Hazır<\/span>/.test(stdout)],
-  ['character tab active',/id="tab-chars"[^>]*aria-selected="true"/.test(stdout)],
-  ['stage panel present',/id="panel-stage"[^>]*role="tabpanel"/.test(stdout)]
-];
-const failed=checks.filter(([,ok])=>!ok).map(([name])=>name);
-if(failed.length){
-  throw new Error('Browser smoke failed: '+failed.join(', ')+'\nDOM tail:\n'+stdout.slice(-4000)+'\nChrome stderr:\n'+stderr.slice(-2000));
+let client=null,ws=null;
+try{
+  await devtoolsReady;
+  const targets=await fetch(`http://127.0.0.1:${devtoolsPort}/json/list`).then(r=>r.json());
+  const target=targets.find(t=>t.type==='page');
+  if(!target?.webSocketDebuggerUrl) throw new Error('Chrome page target bulunamadı');
+  ws=new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('CDP WebSocket timeout')),5000);
+    ws.addEventListener('open',()=>{clearTimeout(timer);resolve();},{once:true});
+    ws.addEventListener('error',()=>{clearTimeout(timer);reject(new Error('CDP WebSocket açılamadı'));},{once:true});
+  });
+  client=new CdpClient(ws);
+  await client.send('Runtime.enable');
+  await client.send('Page.enable');
+  await client.send('Log.enable').catch(()=>{});
+  await client.send('Page.navigate',{url:pageUrl});
+
+  const deadline=Date.now()+8000;
+  let state=null;
+  while(Date.now()<deadline){
+    await wait(120);
+    const result=await client.send('Runtime.evaluate',{
+      expression:`JSON.stringify({
+        ready:document.documentElement.dataset.appReady==='true',
+        pageRows:document.querySelectorAll('.page-row').length,
+        autosave:document.getElementById('autosaveStatusText')?.textContent||'',
+        activeTab:document.getElementById('tab-chars')?.getAttribute('aria-selected')||'',
+        stagePanel:!!document.getElementById('panel-stage')
+      })`,
+      returnByValue:true
+    });
+    try{state=JSON.parse(result.result?.value||'{}');}catch{state=null;}
+    if(state?.ready) break;
+  }
+
+  const exceptions=client.events
+    .filter(e=>e.method==='Runtime.exceptionThrown')
+    .map(e=>e.params?.exceptionDetails?.exception?.description||e.params?.exceptionDetails?.text||'Runtime exception');
+  const consoleErrors=client.events
+    .filter(e=>e.method==='Runtime.consoleAPICalled'&&e.params?.type==='error')
+    .map(e=>(e.params?.args||[]).map(a=>a.value||a.description||'').join(' '));
+  const failed=[];
+  if(!state?.ready) failed.push('app boot marker');
+  if(!(state?.pageRows>0)) failed.push('initial page rendered');
+  if(state?.autosave!=='Hazır') failed.push('autosave status ready');
+  if(state?.activeTab!=='true') failed.push('character tab active');
+  if(!state?.stagePanel) failed.push('stage panel present');
+  if(exceptions.length) failed.push('runtime exception');
+
+  if(failed.length){
+    throw new Error(
+      'Browser smoke failed: '+failed.join(', ')+
+      '\nState: '+JSON.stringify(state)+
+      '\nRequests: '+JSON.stringify(requests)+
+      '\nExceptions: '+exceptions.join(' | ')+
+      '\nConsole errors: '+consoleErrors.join(' | ')+
+      '\nChrome stderr: '+stderr.slice(-2500)
+    );
+  }
+  console.log('Browser smoke passed:',JSON.stringify(state));
+}finally{
+  try{ws?.close();}catch{}
+  try{child.kill('SIGKILL');}catch{}
+  server.close();
+  await rm(profile,{recursive:true,force:true}).catch(()=>{});
 }
-console.log('Browser smoke passed:',checks.map(([name])=>name).join(', '));
