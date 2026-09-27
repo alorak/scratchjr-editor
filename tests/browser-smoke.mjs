@@ -126,6 +126,26 @@ try{
     if(state?.ready) break;
   }
 
+  let interaction=null;
+  if(state?.ready){
+    await client.send('Runtime.evaluate',{
+      expression:`document.getElementById('tab-stage')?.click();document.getElementById('textAddBtn')?.click();`,
+      returnByValue:true
+    });
+    await wait(120);
+    const interactionResult=await client.send('Runtime.evaluate',{
+      expression:`JSON.stringify({
+        stageTab:document.getElementById('tab-stage')?.getAttribute('aria-selected')||'',
+        stageHidden:document.getElementById('panel-stage')?.hidden??true,
+        stageTexts:document.querySelectorAll('#stage .stage-text').length,
+        selectedTextItem:document.querySelectorAll('#textItemList .text-item.sel').length,
+        pageRows:document.querySelectorAll('.page-row').length
+      })`,
+      returnByValue:true
+    });
+    try{interaction=JSON.parse(interactionResult.result?.value||'{}');}catch{interaction=null;}
+  }
+
   const exceptions=client.events
     .filter(e=>e.method==='Runtime.exceptionThrown')
     .map(e=>e.params?.exceptionDetails?.exception?.description||e.params?.exceptionDetails?.text||'Runtime exception');
@@ -138,19 +158,26 @@ try{
   if(state?.autosave!=='Hazır') failed.push('autosave status ready');
   if(state?.activeTab!=='true') failed.push('character tab active');
   if(!state?.stagePanel) failed.push('stage panel present');
+  if(state?.ready){
+    if(interaction?.stageTab!=='true'||interaction?.stageHidden!==false) failed.push('stage tab interaction');
+    if(!(interaction?.stageTexts>0)) failed.push('text add stage render');
+    if(!(interaction?.selectedTextItem>0)) failed.push('text selection render');
+    if(!(interaction?.pageRows>0)) failed.push('page strip after interaction');
+  }
   if(exceptions.length) failed.push('runtime exception');
 
   if(failed.length){
     throw new Error(
       'Browser smoke failed: '+failed.join(', ')+
       '\nState: '+JSON.stringify(state)+
+      '\nInteraction: '+JSON.stringify(interaction)+
       '\nRequests: '+JSON.stringify(requests)+
       '\nExceptions: '+exceptions.join(' | ')+
       '\nConsole errors: '+consoleErrors.join(' | ')+
       '\nChrome stderr: '+stderr.slice(-2500)
     );
   }
-  console.log('Browser smoke passed:',JSON.stringify(state));
+  console.log('Browser smoke passed:',JSON.stringify({state,interaction}));
 }finally{
   try{ws?.close();}catch{}
   try{child.kill('SIGKILL');}catch{}
