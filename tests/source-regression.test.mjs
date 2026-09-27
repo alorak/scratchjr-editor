@@ -59,3 +59,12 @@ test('audio lifecycle closes contexts and prevents late recording blobs',()=>{
   assert.match(app,/discardOnStop/);
   assert.match(app,/URL\.revokeObjectURL\(blobUrl\)/);
 });
+
+test('unsafe SVG fallback is rejected instead of nesting SVG data URLs',()=>{
+  assert.match(app,/SVG güvenli biçimde rasterize edilemedi/);
+  assert.doesNotMatch(app,/wrapRasterSvg\(svgDataURL/);
+});
+
+test('pagehide audio cleanup does not trigger a sound-list rerender',()=>{
+  assert.match(app,/stopCurrentSound\(false\)/);
+});
