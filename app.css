@@ -7,7 +7,7 @@
   *{box-sizing:border-box}
   html,body{margin:0}
   body{
-    font-family:'Fredoka','Trebuchet MS',system-ui,sans-serif;color:var(--ink);
+    font-family:ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,-apple-system,BlinkMacSystemFont,sans-serif;color:var(--ink);
     background:
       radial-gradient(120% 90% at 100% 0%, #fff7df 0%, transparent 55%),
       radial-gradient(120% 90% at 0% 100%, #e9f6ff 0%, transparent 55%),
@@ -277,13 +277,13 @@
   .text-item:hover{border-color:var(--purple);background:#f5eeff}
   .text-item.sel{border-color:var(--purple);background:#eee4ff;
     box-shadow:0 0 0 2px rgba(155,89,208,.18)}
-  .text-item-preview{font-family:'Fredoka',sans-serif;font-weight:600;font-size:.8rem;
+  .text-item-preview{font-family:ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;font-weight:600;font-size:.8rem;
     overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
   .text-empty-msg{text-align:center;color:#c5bdd0;font-size:.74rem;padding:10px 8px;line-height:1.45}
   .text-edit-panel{display:flex;flex-direction:column;gap:5px;padding:7px 8px;
     border-top:2px solid var(--line);background:#fdf9f2}
   .text-str-input{width:100%;border:2px solid var(--line);border-radius:8px;padding:4px 7px;
-    font-family:'Fredoka',sans-serif;font-size:.88rem;font-weight:600;color:var(--ink);
+    font-family:ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;font-size:.88rem;font-weight:600;color:var(--ink);
     outline:none;background:#fff}
   .text-str-input:focus{border-color:var(--purple)}
   .text-color-row{display:flex;flex-wrap:wrap;gap:3px;align-items:center}
@@ -305,7 +305,7 @@
     box-shadow:0 1px 0 rgba(38,36,51,.06);transition:border-color .1s,background .1s;width:100%;margin-top:1px}
   .text-del-btn:hover{background:#fff0ef;border-color:var(--red)}
   .stage-text{position:absolute;cursor:grab;pointer-events:auto;user-select:none;
-    font-family:'Fredoka',sans-serif;font-weight:600;white-space:nowrap;
+    font-family:ui-rounded,"SF Pro Rounded","Segoe UI",system-ui,sans-serif;font-weight:600;white-space:nowrap;
     transform:translate(-50%,-50%);line-height:1.125;touch-action:none}
   .stage-text.sel{outline:3px dashed var(--blue);outline-offset:4px;border-radius:4px}
 

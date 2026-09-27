@@ -1,4 +1,8 @@
-import {cloneJson,hasSvgTransform,hasSvgRootPresentation,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
+}
 
 "use strict";
 const STAGE_W=480, STAGE_H=360, MAX_PAGES=4;
@@ -420,22 +424,9 @@ function normalizeSvgForChar(svgText, pxW, pxH){
 }
 
 /* ---------- ImageTracer (gerçek vektör) — tembel yükleme ---------- */
-let tracerLoading=null;
 function loadTracer(){
   if(window.ImageTracer) return Promise.resolve();
-  if(tracerLoading) return tracerLoading;
-  const urls=[
-    'https://cdnjs.cloudflare.com/ajax/libs/imagetracerjs/1.2.6/imagetracer_v1.2.6.min.js',
-    'https://cdn.jsdelivr.net/npm/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js',
-    'https://unpkg.com/imagetracerjs@1.2.6/imagetracer_v1.2.6.min.js'
-  ];
-  tracerLoading=new Promise((res,rej)=>{let i=0;(function go(){
-    if(i>=urls.length) return rej(new Error('tracer yüklenemedi'));
-    const s=document.createElement('script');s.src=urls[i++];
-    s.onload=()=>window.ImageTracer?res():go(); s.onerror=go;
-    document.head.appendChild(s);
-  })();});
-  return tracerLoading;
+  return Promise.reject(new Error('Yerel ImageTracer yüklenemedi'));
 }
 async function rasterToVectorSvg(dataURL,colors){
   await loadTracer();
@@ -473,18 +464,21 @@ async function fileToAsset(file){
   const isSvg=/svg/.test(file.type)||/\.svg$/i.test(file.name);
   if(isSvg){
     const text=await readAsText(file);
+    // SVG hiçbir şekilde browser renderer'a verilmeden önce güvenlik/offline
+    // politikasından geçer.
+    const svgPolicy=inspectSvgCompatibility(text);
+    if(svgPolicy.externalRefs) throw new Error('SVG harici veya göreli kaynak içeriyor; offline kullanım için desteklenmiyor');
+    if(svgPolicy.activeContent) throw new Error('SVG aktif script içeriği içeriyor');
     const svgDataURL='data:image/svg+xml;base64,'+b64(text);
     const img=await loadImage(svgDataURL).catch(()=>new Image());
     const w=img.naturalWidth||svgDims(text).w||150;
     const h=img.naturalHeight||svgDims(text).h||150;
 
-    // 1. Pure-path SVG: yalnızca transform içermeyen düz vektörleri normalize et.
-    // Transform'lu SVG'yi zorla flatten etmek görseli bozabildiği için aşağıdaki
-    // raster fallback yoluna bırakıyoruz; böylece görünüm kaybolmuyor.
-    const hasEmbedded=/<image[\s/>]/i.test(text);
-    const hasTransforms=hasSvgTransform(text);
-    const hasRootPresentation=hasSvgRootPresentation(text);
-    if(!hasEmbedded && !hasTransforms && !hasRootPresentation){
+    // 1. Yalnızca deterministik olarak güvenli görülen SVG'leri doğrudan
+    // vektör normalize et. Arc/transform/style/effect/unsupported geometry
+    // içerenler görünüm kaybını önlemek için raster fallback'e gider.
+    const hasEmbedded=svgPolicy.hasEmbeddedImage;
+    if(svgPolicy.safeDirectVector){
       const norm=normalizeSvgForChar(text, w, h);
       if(norm){
         const normDataURL='data:image/svg+xml;base64,'+b64(norm.text);
@@ -520,10 +514,9 @@ async function fileToAsset(file){
       const svgText=wrapRasterSvg(prev.pngURL, prev.w, prev.h);
       return { isSvg:true, vector:false, svgText, dataURL:prev.pngURL, w:prev.w, h:prev.h, img:prev.img };
     }
-    // Son çare: canvas da başarısız, SVG'yi ham tut (uyarı ver)
-    showToast('⚠ Bu SVG önizlenemiyor — yine de eklendi, görüntü bozuk olabilir','err');
-    const svgText=wrapRasterSvg(svgDataURL, w, h);
-    return { isSvg:true, vector:false, svgText, dataURL:svgDataURL, w, h, img };
+    // Güvenli rasterizasyon başarısızsa data:image/svg+xml wrapper üretme;
+    // bu yapı ScratchJr tarafında 0×0 / render hatalarına yol açabiliyor.
+    throw new Error('SVG güvenli biçimde rasterize edilemedi');
   }
   const dataURL=await readAsDataURL(file);
   const baseImg=await loadImage(dataURL);
@@ -531,9 +524,14 @@ async function fileToAsset(file){
   const {pngURL,w,h}=capPng(baseImg,480);
   if(conv.mode==='trace'){
     try{
-      const svgText=await rasterToVectorSvg(pngURL, conv.colors);
-      const d=svgDims(svgText); const preview='data:image/svg+xml;base64,'+b64(svgText);
-      return { isSvg:false, vector:true, svgText, dataURL:preview, w:d.w||w, h:d.h||h, img:await loadImage(preview) };
+      const traced=await rasterToVectorSvg(pngURL,conv.colors);
+      const tracedPolicy=inspectSvgCompatibility(traced);
+      if(!tracedPolicy.safeDirectVector) throw new Error('ImageTracer çıktısı güvenli vektör kriterlerini karşılamıyor');
+      const d=svgDims(traced);
+      const norm=normalizeSvgForChar(traced,d.w||w,d.h||h);
+      if(!norm) throw new Error('ImageTracer çıktısı normalize edilemedi');
+      const preview='data:image/svg+xml;base64,'+b64(norm.text);
+      return {isSvg:false,vector:true,svgText:norm.text,dataURL:preview,w:norm.w,h:norm.h,img:await loadImage(preview)};
     }catch(e){
       showToast('Vektöre çevrilemedi, gömme kullanıldı','err');
     }
@@ -562,11 +560,27 @@ async function fileToBackgroundAsset(file){
   const isSvg=/svg/.test(file.type)||/\.svg$/i.test(file.name);
   if(isSvg){
     const raw=await readAsText(file);
-    const normalized=normalizeSvgForBackground(raw)||raw;
-    const dataURL='data:image/svg+xml;base64,'+b64(normalized);
-    const img=await loadImage(dataURL).catch(()=>new Image());
-    return {isSvg:true,vector:!/<image[\s/>]/i.test(normalized),preserveSvg:true,svgText:normalized,
-      dataURL,w:STAGE_W,h:STAGE_H,img};
+    const policy=inspectSvgCompatibility(raw);
+    if(policy.externalRefs) throw new Error('SVG harici veya göreli kaynak içeriyor; offline kullanım için desteklenmiyor');
+    if(policy.activeContent) throw new Error('SVG aktif script içeriği içeriyor');
+
+    if(policy.safeDirectVector){
+      const normalized=normalizeSvgForBackground(raw);
+      if(normalized){
+        const dataURL='data:image/svg+xml;base64,'+b64(normalized);
+        return {isSvg:true,vector:true,preserveSvg:true,svgText:normalized,
+          dataURL,w:STAGE_W,h:STAGE_H,img:await loadImage(dataURL)};
+      }
+    }
+
+    // Karakterlerdekiyle aynı politika: karmaşık SVG arkaplanlar da
+    // browser görünümü korunarak raster fallback'e çevrilir.
+    const dims=svgDims(raw);
+    const rawURL='data:image/svg+xml;base64,'+b64(raw);
+    const prev=await svgToPngPreview(rawURL,dims.w,dims.h,480);
+    if(!prev||!prev.pngURL) throw new Error('Arkaplan SVG güvenli biçimde rasterize edilemedi');
+    return {isSvg:true,vector:false,preserveSvg:false,svgText:wrapRasterSvg(prev.pngURL,prev.w,prev.h),
+      dataURL:prev.pngURL,w:prev.w,h:prev.h,img:prev.img};
   }
   const dataURL=await readAsDataURL(file);
   const baseImg=await loadImage(dataURL);
@@ -574,7 +588,10 @@ async function fileToBackgroundAsset(file){
   if(conv.mode==='trace'){
     try{
       const traced=await rasterToVectorSvg(pngURL,conv.colors);
-      const normalized=normalizeSvgForBackground(traced)||traced;
+      const tracedPolicy=inspectSvgCompatibility(traced);
+      if(!tracedPolicy.safeDirectVector) throw new Error('ImageTracer çıktısı güvenli vektör kriterlerini karşılamıyor');
+      const normalized=normalizeSvgForBackground(traced);
+      if(!normalized) throw new Error('ImageTracer arkaplan çıktısı normalize edilemedi');
       const preview='data:image/svg+xml;base64,'+b64(normalized);
       return {isSvg:false,vector:true,preserveSvg:true,svgText:normalized,dataURL:preview,
         w:STAGE_W,h:STAGE_H,img:await loadImage(preview)};
@@ -762,11 +779,20 @@ function renderSounds(){
   });
 }
 
+const AudioContextCtor=window.AudioContext||window.webkitAudioContext;
 let _waveAudioCtx=null;
+function ensureAudioContext(ctx){
+  if(!AudioContextCtor) throw new Error('Web Audio desteklenmiyor');
+  return (!ctx||ctx.state==='closed')?new AudioContextCtor():ctx;
+}
+function closeAudioContext(ctx){
+  if(ctx&&ctx.state!=='closed') return ctx.close().catch(()=>{});
+  return Promise.resolve();
+}
 async function loadAndDrawWave(s,cvs,durEl){
   if(!s._waveData){
     try{
-      _waveAudioCtx=_waveAudioCtx||new(window.AudioContext||window.webkitAudioContext)();
+      _waveAudioCtx=ensureAudioContext(_waveAudioCtx);
       const decoded=await _waveAudioCtx.decodeAudioData(s.buf.slice(0));
       s._duration=decoded.duration;
       const ch=decoded.getChannelData(0);
@@ -828,7 +854,7 @@ function renderPageThumbSync(page,w,h){
   }
   for(const t of (page.texts||[])){
     const fontSize=Math.max(6,Math.round(t.fontsize*w/STAGE_W));
-    ctx.font=`600 ${fontSize}px Fredoka,sans-serif`;
+    ctx.font=`600 ${fontSize}px ui-rounded, system-ui, sans-serif`;
     ctx.fillStyle=t.color||'#1a1a1a';
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*w,t.fy*h);}catch(e){}
@@ -1209,10 +1235,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 /* ---- SES KAYIT MODALI ---- */
 (function(){
   // State
-  let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null;
+  let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null, mediaSource=null;
   let animId=null, playAnimId=null;
-  let isRecording=false, startTime=0, waveData=[], lastSampleAt=0;
-  let recBlob=null, blobUrl=null;
+  let isRecording=false, startTime=0, waveData=[], lastSampleAt=0, discardOnStop=false;
+  let recBlob=null, blobUrl=null, startRequestId=0;
   let trimStart=0, trimEnd=1;
   let dragHandle=null, dragStartX=0, dragStartPct=0;
   const SAMPLE_MS=50, MAX_MS=60000;
@@ -1372,7 +1398,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
   // Open / close
   function openModal(){
-    chunks=[];waveData=[];isRecording=false;recBlob=null;blobUrl=null;lastSampleAt=0;
+    startRequestId++;
+    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
+    chunks=[];waveData=[];isRecording=false;recBlob=null;lastSampleAt=0;discardOnStop=false;
+    recBtn.disabled=false;
     trimStart=0;trimEnd=1;
     audio.src='';
     recBtn.classList.remove('recording');
@@ -1386,64 +1415,91 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   }
 
   function closeModal(){
+    startRequestId++;
     overlay.classList.remove('show');
+    recBtn.disabled=false;
     if(isRecording) stopRec(false);
     stopPlayback();
     cancelAnimationFrame(animId);
     if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+    if(mediaSource){try{mediaSource.disconnect();}catch(e){} mediaSource=null;}
+    if(analyser){try{analyser.disconnect();}catch(e){} analyser=null;}
+    if(actx){closeAudioContext(actx);actx=null;}
     if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-    audio.removeAttribute('src');
+    audio.removeAttribute('src'); audio.load();
     hideTrim();
     addBtn.style.display='none';
   }
 
   // Recording
   async function startRec(){
-    try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}
-    catch(e){showToast('Mikrofon erisimi reddedildi');return;}
-    actx=actx||new(window.AudioContext||window.webkitAudioContext)();
-    if(actx.state==='suspended') await actx.resume();
-    analyser=actx.createAnalyser(); analyser.fftSize=1024;
-    actx.createMediaStreamSource(stream).connect(analyser);
-    chunks=[];waveData=[];lastSampleAt=0;
-    const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
-    mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
-    mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
-    mediaRecorder.onstop=onRecStop;
-    mediaRecorder.start(100);
-    isRecording=true; startTime=Date.now();
-    recBtn.classList.add('recording');
-    const fbuf=new Uint8Array(analyser.frequencyBinCount);
-    function loop(){
-      if(!isRecording) return;
-      const now=Date.now()-startTime;
-      analyser.getByteTimeDomainData(fbuf);
-      if(now-lastSampleAt>=SAMPLE_MS){
-        let pk=0; for(let i=0;i<fbuf.length;i++) pk=Math.max(pk,Math.abs(fbuf[i]-128)/128);
-        waveData.push(pk); lastSampleAt=now;
+    if(isRecording||recBtn.disabled) return;
+    const requestId=++startRequestId;
+    recBtn.disabled=true;
+    let requestedStream=null;
+    try{
+      requestedStream=await navigator.mediaDevices.getUserMedia({audio:true});
+      if(requestId!==startRequestId||!overlay.classList.contains('show')){
+        requestedStream.getTracks().forEach(t=>t.stop());
+        requestedStream=null;
+        return;
       }
-      timer.textContent=fmtTime(now);
-      drawLive();
-      animId=requestAnimationFrame(loop);
+      stream=requestedStream; requestedStream=null;
+      actx=ensureAudioContext(actx);
+      if(actx.state==='suspended') await actx.resume();
+      if(requestId!==startRequestId||!overlay.classList.contains('show')){
+        if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+        return;
+      }
+      analyser=actx.createAnalyser(); analyser.fftSize=1024;
+      mediaSource=actx.createMediaStreamSource(stream); mediaSource.connect(analyser);
+      chunks=[];waveData=[];lastSampleAt=0;discardOnStop=false;
+      const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
+      mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
+      mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
+      mediaRecorder.onstop=onRecStop;
+      mediaRecorder.start(100);
+      isRecording=true; startTime=Date.now();
+      recBtn.classList.add('recording');
+      const fbuf=new Uint8Array(analyser.frequencyBinCount);
+      function loop(){
+        if(!isRecording) return;
+        const now=Date.now()-startTime;
+        analyser.getByteTimeDomainData(fbuf);
+        if(now-lastSampleAt>=SAMPLE_MS){
+          let pk=0; for(let i=0;i<fbuf.length;i++) pk=Math.max(pk,Math.abs(fbuf[i]-128)/128);
+          waveData.push(pk); lastSampleAt=now;
+        }
+        timer.textContent=fmtTime(now);
+        drawLive();
+        animId=requestAnimationFrame(loop);
+      }
+      loop();
+      setTimeout(()=>{if(isRecording&&requestId===startRequestId)stopRec(true);},MAX_MS);
+    }catch(e){
+      if(requestId===startRequestId) showToast('Mikrofon erişimi reddedildi veya kullanılamıyor');
+    }finally{
+      if(requestedStream) requestedStream.getTracks().forEach(t=>t.stop());
+      if(requestId===startRequestId) recBtn.disabled=false;
     }
-    loop();
-    setTimeout(()=>{if(isRecording)stopRec(true);},MAX_MS);
   }
 
   function stopRec(keep){
     if(!mediaRecorder||mediaRecorder.state==='inactive') return;
-    isRecording=false;
+    isRecording=false; discardOnStop=!keep;
     recBtn.classList.remove('recording');
     cancelAnimationFrame(animId);
     mediaRecorder.stop();
-    stream.getTracks().forEach(t=>t.stop()); stream=null;
+    if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
     if(!keep){waveData=[];drawIdle();}
   }
 
   async function onRecStop(){
+    if(discardOnStop){chunks=[];recBlob=null;discardOnStop=false;return;}
     if(!chunks.length) return;
     const mime=chunks[0].type||'audio/webm';
     recBlob=new Blob(chunks,{type:mime});
+    if(blobUrl) URL.revokeObjectURL(blobUrl);
     blobUrl=URL.createObjectURL(recBlob);
     audio.src=blobUrl;
     setPlayStop(true,false);
@@ -1480,9 +1536,10 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
   addBtn.onclick=async()=>{
     if(!recBlob) return;
     addBtn.disabled=true; addBtn.textContent='Ekleniyor…';
+    let ac=null;
     try{
       const raw=await recBlob.arrayBuffer();
-      const ac=new AudioContext();
+      ac=ensureAudioContext(null);
       const decoded=await ac.decodeAudioData(raw);
       const sStart=Math.floor(trimStart*decoded.length);
       const sEnd=Math.floor(trimEnd*decoded.length);
@@ -1502,6 +1559,8 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
     }catch(e){
       showToast('Hata: '+e.message);
       addBtn.disabled=false; addBtn.textContent='✅ Projeye Ekle';
+    }finally{
+      if(ac) await closeAudioContext(ac);
     }
   };
 
@@ -1514,39 +1573,62 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 })();
 
 
-let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null;
+let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null, playbackGeneration=0;
 
-function stopCurrentSound(){
-  if(currentPlayingNode){ try{ currentPlayingNode.stop(); }catch(e){} currentPlayingNode=null; }
+function stopCurrentSound(shouldRender=true){
+  playbackGeneration++;
+  if(currentPlayingNode){
+    try{currentPlayingNode.stop();}catch(e){}
+    try{currentPlayingNode.disconnect();}catch(e){}
+    currentPlayingNode=null;
+  }
   currentPlayingId=null; _playStartTime=null;
   cancelAnimationFrame(_playRafId);
-  renderSounds();
+  if(shouldRender) renderSounds();
 }
 
 function togglePlaySound(s){
   if(currentPlayingId===s.id){ stopCurrentSound(); return; }
   stopCurrentSound();
+  const generation=playbackGeneration;
   try{
-    audioCtx=audioCtx||new(window.AudioContext||window.webkitAudioContext)();
+    audioCtx=ensureAudioContext(audioCtx);
+    if(audioCtx.state==='suspended') audioCtx.resume().catch(()=>{});
     audioCtx.decodeAudioData(s.buf.slice(0)).then(b=>{
+      if(generation!==playbackGeneration) return;
       const node=audioCtx.createBufferSource();
       node.buffer=b; node.connect(audioCtx.destination);
-      node.onended=()=>{ if(currentPlayingId===s.id){ currentPlayingNode=null; currentPlayingId=null; _playStartTime=null; cancelAnimationFrame(_playRafId); renderSounds(); } };
+      node.onended=()=>{
+        try{node.disconnect();}catch(e){}
+        if(generation===playbackGeneration&&currentPlayingId===s.id){
+          currentPlayingNode=null; currentPlayingId=null; _playStartTime=null;
+          cancelAnimationFrame(_playRafId); renderSounds();
+        }
+      };
+      if(generation!==playbackGeneration){try{node.disconnect();}catch(e){} return;}
       node.start();
       currentPlayingNode=node; currentPlayingId=s.id; _playStartTime=Date.now();
       renderSounds();
-      // animate progress cursor
       function tickCursor(){
+        if(generation!==playbackGeneration) return;
         const cvs=document.querySelector('.soundlist [data-sid="'+s.id+'"]')?.closest('li')?.querySelector('.snd-wave');
         if(cvs) drawWaveCanvas(s,cvs);
         if(currentPlayingId===s.id) _playRafId=requestAnimationFrame(tickCursor);
       }
       tickCursor();
-    }).catch(()=>showToast('Bu format önizlenemiyor (yine de dışa aktarılır)'));
-  }catch(e){ showToast('Önizleme yapılamadı'); }
+    }).catch(()=>{if(generation===playbackGeneration)showToast('Bu format önizlenemiyor (yine de dışa aktarılır)');});
+  }catch(e){ if(generation===playbackGeneration)showToast('Önizleme yapılamadı'); }
 }
 
 function playSound(s){ togglePlaySound(s); }
+
+function disposeAudioResources(){
+  stopCurrentSound(false);
+  const contexts=[audioCtx,_waveAudioCtx];
+  audioCtx=null; _waveAudioCtx=null;
+  contexts.forEach(ctx=>closeAudioContext(ctx));
+}
+window.addEventListener('pagehide',disposeAudioResources);
 
 /* ---------- dışa aktarma ---------- */
 const md5str=s=>SparkMD5.hash(s); const md5buf=b=>SparkMD5.ArrayBuffer.hash(b);
@@ -1560,7 +1642,7 @@ async function renderThumb(page){
   for(const c of page.chars){ const dispW=c.sizePct/100*STAGE_W,dispH=dispW*c.aspect,x=c.fx*STAGE_W,y=c.fy*STAGE_H;
     ctx.save(); ctx.translate(x,y); if(c.flip)ctx.scale(-1,1); try{ctx.drawImage(c.asset.img,-dispW/2,-dispH/2,dispW,dispH);}catch(e){} ctx.restore(); }
   for(const t of (page.texts||[])){
-    ctx.font=`600 ${t.fontsize||16}px Fredoka,sans-serif`;
+    ctx.font=`600 ${t.fontsize||16}px ui-rounded, system-ui, sans-serif`;
     ctx.fillStyle=t.color||'#1a1a1a';
     ctx.textAlign='center'; ctx.textBaseline='middle';
     try{ctx.fillText(t.str||'',t.fx*STAGE_W,t.fy*STAGE_H);}catch(e){}
@@ -1713,7 +1795,10 @@ function solidColorSvgFill(svgText){
   }catch(e){ return null; }
 }
 async function svgTextToAsset(text,opts={}){
-  const hasImage=/<image[\s/>]/i.test(text);
+  const policy=inspectSvgCompatibility(text);
+  if(policy.externalRefs) throw new Error('Projedeki SVG harici veya göreli kaynak içeriyor');
+  if(policy.activeContent) throw new Error('Projedeki SVG aktif script içeriği içeriyor');
+  const hasImage=policy.hasEmbeddedImage;
   const {w,h}=svgDims(text);
   const dataURL='data:image/svg+xml;base64,'+b64(text);
   let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
@@ -1903,156 +1988,89 @@ function confirmModal(opts){
 
 /* ---------- SVG bilgi analizi ---------- */
 function analyzeSvg(svgText){
-  const text = svgText || '';
-  const byteSize = new TextEncoder().encode(text).length;
-  const paths    = (text.match(/<path[\s>]/gi)||[]).length;
-  const circles  = (text.match(/<circle[\s>]/gi)||[]).length;
-  const polygons = (text.match(/<polygon[\s>]/gi)||[]).length;
-  const rects    = (text.match(/<rect[\s>]/gi)||[]).length;
-  const styleFills = (text.match(/style="[^"]*fill:/gi)||[]).length;
-  const directFills= (text.match(/\bfill="[^"]*"/gi)||[]).length;
-  const colors   = new Set((text.match(/fill="(#[0-9a-fA-F]{3,8})"/gi)||[]).map(m=>m.toLowerCase())).size;
-  const hasViewBox = /viewBox="[^"]*"/.test(text);
-  const hasXmlns  = /xmlns="http:\/\/www\.w3\.org\/2000\/svg"/.test(text);
-  const hasComment= /<!--Created with Scratch Jr-->/.test(text);
-  const hasGScale = /<g[^>]*transform="scale\(/.test(text);
-  const hasImage  = /<image[\s/>]/i.test(text);
-  const arcPaths  = (text.match(/<path[^>]+d="[^"]*[Aa][\d\s.-]/g)||[]).length;
-  const vbMatch   = text.match(/viewBox="([^"]*)"/);
-  const vbVal     = vbMatch ? vbMatch[1] : '—';
-  const wMatch    = text.match(/\bwidth="([^"]*)"/);
-  const hMatch    = text.match(/\bheight="([^"]*)"/);
-  const wsNodes      = (text.match(/>\s+</g)||[]).length;
-  const allComments  = (text.match(/<!--/g)||[]).length;
-  const extraComments= Math.max(0, allComments - (hasComment?1:0));
-  const vbIs259  = /viewBox="0 0 259 259"/.test(text);
-  const sizeIs259= /width="259px"/.test(text) && /height="259px"/.test(text);
-  return { byteSize, paths, circles, polygons, rects, styleFills, directFills,
-           colors, hasViewBox, hasXmlns, hasComment, hasGScale, hasImage,
-           arcPaths, vbVal, w: wMatch?wMatch[1]:'—', h: hMatch?hMatch[1]:'—',
-           wsNodes, extraComments, vbIs259, sizeIs259 };
+  const text=svgText||'';
+  const policy=inspectSvgCompatibility(text);
+  const byteSize=new TextEncoder().encode(text).length;
+  const paths=(text.match(/<path[\s>]/gi)||[]).length;
+  const circles=(text.match(/<circle[\s>]/gi)||[]).length;
+  const polygons=(text.match(/<polygon[\s>]/gi)||[]).length;
+  const directFills=(text.match(/\bfill="[^"]*"/gi)||[]).length;
+  const colors=new Set((text.match(/fill="(#[0-9a-fA-F]{3,8})"/gi)||[]).map(m=>m.toLowerCase())).size;
+  const vbMatch=text.match(/viewBox="([^"]*)"/i);
+  const wMatch=text.match(/\bwidth="([^"]*)"/i);
+  const hMatch=text.match(/\bheight="([^"]*)"/i);
+  return {...policy,byteSize,paths,circles,polygons,directFills,colors,
+    vbVal:vbMatch?vbMatch[1]:'—',w:wMatch?wMatch[1]:'—',h:hMatch?hMatch[1]:'—'};
 }
 
 function showSvgInfo(libItem){
-  const a = analyzeSvg(libItem.asset.svgText);
-  document.getElementById('infoTitle').textContent = libItem.name + ' — SVG Bilgileri';
-
-  // ── Genel istatistikler ────────────────────────────────────────────────────
-  const genRows = [
-    ['Dosya boyutu', (a.byteSize/1024).toFixed(1)+' KB'],
-    ['Path sayısı',  a.paths],
-    ['Benzersiz renk (= path)', a.colors+(a.colors>100?' ⚠':'')],
-    ['Boyut',        a.w+' × '+a.h],
-    ['viewBox',      a.vbVal],
+  const a=analyzeSvg(libItem.asset.svgText);
+  document.getElementById('infoTitle').textContent=libItem.name+' — SVG Bilgileri';
+  const safe=v=>escapeHtml(String(v));
+  const unsupported=Object.entries(a.unsupportedTags).filter(([,n])=>n).map(([k,n])=>k+' ×'+n).join(', ')||'Yok';
+  const effects=Object.entries(a.effectTags).filter(([,n])=>n).map(([k,n])=>k+' ×'+n).join(', ')||'Yok';
+  const genRows=[
+    ['Çıktı türü',libItem.asset.vector?'Vektör':'Güvenli raster / gömülü'],
+    ['Dosya boyutu',(a.byteSize/1024).toFixed(1)+' KB'],
+    ['Path sayısı',a.paths],
+    ['Renk sayısı',a.colors],
+    ['Boyut',a.w+' × '+a.h],
+    ['viewBox',a.vbVal]
+  ];
+  const checks=[
+    {ok:!a.externalRefs,label:'Harici/göreli kaynak',value:a.externalRefs?a.unsafeReferences.join(', '):'Yok',
+      errNote:'Offline çalışma için yalnızca data: ve #fragment referansları kabul edilir.'},
+    {ok:!a.activeContent,label:'Aktif içerik',value:a.activeContent?'script var':'Yok',
+      errNote:'Script içeren SVG dosyaları kabul edilmez.'},
+    {ok:a.transformCount===0,label:'Transform',value:a.transformCount?a.transformCount+' adet':'Yok',
+      errNote:'Transform içeren yüklemeler görünümü korumak için raster fallback kullanır.'},
+    {ok:a.arcPaths===0,label:'Arc komutu A/a',value:a.arcPaths?a.arcPaths+' path':'Yok',
+      errNote:'Arc içeren yüklemeler doğrudan vektör normalize edilmez; raster fallback kullanılır.'},
+    {ok:a.unsupportedCount===0,label:'Ek geometri',value:unsupported,
+      errNote:'rect/ellipse/line/polyline/text/use gibi yapılar doğrudan vektör yoluna alınmaz.'},
+    {ok:a.effectCount===0,label:'Clip / mask / gradient / filter',value:effects,
+      errNote:'Efektli SVG görünümü korunmak için raster fallback kullanır.'},
+    {ok:(a.styleCount+a.styleElementCount)===0,label:'CSS style',value:(a.styleCount+a.styleElementCount)?(a.styleCount+' attribute, '+a.styleElementCount+' <style>'):'Yok',
+      errNote:'style attribute veya <style> elementi içeren SVG otomatik normalizasyonda raster fallback kullanır.'},
+    {ok:!a.rootPresentation,label:'Kök SVG presentation',value:a.rootPresentation?'Var':'Yok',
+      errNote:'Kökten miras alınan fill/stroke/opacity gibi stiller raster fallback ile korunur.'},
+    {ok:!a.viewBoxOriginNonZero,label:'viewBox başlangıcı',value:a.viewBoxValid?(a.viewBox[0]+' '+a.viewBox[1]):'Belirsiz',
+      errNote:'0,0 dışında başlayan viewBox doğrudan koordinat ölçeklemesine sokulmaz.'}
   ];
 
-  // ── Uyumluluk kontrolleri ─────────────────────────────────────────────────
-  // Her kontrol: { ok, label, value, okNote, errNote }
-  const checks = [
-    {
-      ok:    a.styleFills===0,
-      label: 'Renk formatı',
-      value: a.styleFills===0 ? `fill="..." attr (${a.directFills} path)` : `style="fill:..." (${a.styleFills} path)`,
-      okNote:  'Renkler paint editörde doğru görünür.',
-      errNote: 'Paint editörde TÜM yollar siyah görünür — fill attr değil CSS style okunuyor!'
-    },
-    {
-      ok:    a.circles===0,
-      label: '<circle> elementi',
-      value: a.circles===0 ? 'Yok' : a.circles+' adet',
-      okNote:  'ScratchJr yalnızca <path> render eder, sorun yok.',
-      errNote: 'ScratchJr <circle> render edemez, element atlanır ya da çökmeye yol açar.'
-    },
-    {
-      ok:    a.polygons===0,
-      label: '<polygon> elementi',
-      value: a.polygons===0 ? 'Yok' : a.polygons+' adet',
-      okNote:  'ScratchJr yalnızca <path> render eder, sorun yok.',
-      errNote: 'ScratchJr <polygon> render edemez, element atlanır ya da çökmeye yol açar.'
-    },
-    {
-      ok:    a.arcPaths===0,
-      label: 'Arc komutu (A/a)',
-      value: a.arcPaths===0 ? 'Yok' : a.arcPaths+' path\'de',
-      okNote:  'drawCommand tablosunda arc işleyicisi yok, sorun çıkmaz.',
-      errNote: '"m[r] is not a function" çökmesi — ScratchJr arc komutunu tanımıyor!'
-    },
-    {
-      ok:    !a.hasGScale,
-      label: '<g transform="scale(...)">',
-      value: a.hasGScale ? 'Var' : 'Yok',
-      okNote:  'Koordinatlar doğrudan ölçeklendirilmiş, paint editör doğru gösterir.',
-      errNote: 'Paint editör bu dönüşümü yok sayar → karakter kırpılır, yalnızca sol üst köşe görünür!'
-    },
-    {
-      ok:    a.wsNodes===0,
-      label: 'Tag arası boşluk (\\n\\t)',
-      value: a.wsNodes===0 ? 'Yok' : a.wsNodes+' yer',
-      okNote:  'Text node yok, drawLayer güvenli çalışır.',
-      errNote: '"e.getAttribute is not a function" çökmesi — boşluk text node olarak işleniyor!'
-    },
-    {
-      ok:    a.extraComments===0,
-      label: 'Fazladan <!-- yorum -->',
-      value: a.extraComments===0 ? 'Yok' : a.extraComments+' adet',
-      okNote:  'Ekstra comment node yok, drawLayer güvenli çalışır.',
-      errNote: '"e.getAttribute is not a function" çökmesi — comment node element sanılıyor!'
-    },
-    {
-      ok:    a.vbIs259 && a.sizeIs259,
-      label: 'Boyut 259×259px',
-      value: (a.vbIs259&&a.sizeIs259) ? '259px / 0 0 259 259' : (a.w+'×'+a.h+' / '+a.vbVal),
-      okNote:  'Karakter alanını tam kaplar.',
-      errNote: 'Karakter 259×259 slotuna tam oturmayabilir, ölçekleme hatası oluşabilir.'
-    },
-  ];
-
-  const passCount = checks.filter(c=>c.ok).length;
-  const total     = checks.length;
-  const pct       = Math.round(passCount/total*100);
-
-  // ── HTML ──────────────────────────────────────────────────────────────────
-  let html = '<div class="info-section-title">Genel</div>';
-  html += '<div class="info-stats-grid">';
-  // first 4 items: 2-col grid (2×2); last item (viewBox) spans full width
+  let html='<div class="info-section-title">Genel</div><div class="info-stats-grid">';
   genRows.forEach(([l,v],i)=>{
-    const span = (i===genRows.length-1 && genRows.length%2===1) ? ' span2' : '';
-    html += `<div class="stat-card${span}"><div class="lbl">${l}</div><div class="val">${v}</div></div>`;
+    const span=(i===genRows.length-1&&genRows.length%2===1)?' span2':'';
+    html+=`<div class="stat-card${span}"><div class="lbl">${safe(l)}</div><div class="val">${safe(v)}</div></div>`;
   });
-  html += '</div>';
-
-  html += '<div class="info-section-title">ScratchJr Uyumluluğu</div>';
-  html += '<div class="compat-grid">';
-  html += checks.map(c=>`
-    <div class="compat-check ${c.ok?'check-ok':'check-err'}">
-      <span class="check-icon">${c.ok?'✓':'✗'}</span>
-      <div class="check-body">
-        <div class="check-top">
-          <span class="lbl">${c.label}</span>
-          <span class="val">${c.value}</span>
-        </div>
-        ${(!c.ok)?`<div class="check-note">${c.errNote}</div>`:''}
-      </div>
+  html+='</div><div class="info-section-title">Vektör güvenlik politikası</div><div class="compat-grid">';
+  html+=checks.map(ch=>`
+    <div class="compat-check ${ch.ok?'check-ok':'check-err'}">
+      <span class="check-icon">${ch.ok?'✓':'↪'}</span>
+      <div class="check-body"><div class="check-top">
+        <span class="lbl">${safe(ch.label)}</span><span class="val">${safe(ch.value)}</span>
+      </div>${ch.ok?'':`<div class="check-note">${safe(ch.errNote)}</div>`}</div>
     </div>`).join('');
-  html += '</div>';
+  html+='</div>';
+  document.getElementById('infoStats').innerHTML=html;
 
-  document.getElementById('infoStats').innerHTML = html;
-
-  const compatEl = document.getElementById('infoCompat');
-  compatEl.className = 'compat-bar '+(pct===100?'good':pct>=62?'warn':'bad');
-  if(pct===100){
-    compatEl.innerHTML = '✓ Paint editörü ile tam uyumlu — yükleme hatası beklenmez';
-  } else {
-    const probs = checks.filter(c=>!c.ok).map(c=>c.label);
-    compatEl.innerHTML = `⚠ Uyumluluk: ${pct}% (${passCount}/${total}) — Sorun: ${probs.join(', ')}`;
+  const compatEl=document.getElementById('infoCompat');
+  if(!libItem.asset.vector || a.hasEmbeddedImage){
+    compatEl.className='compat-bar good';
+    compatEl.textContent='✓ Güvenli raster/gömülü çıktı — karmaşık SVG özellikleri görsel olarak korunur.';
+  }else if(a.safeDirectVector){
+    compatEl.className='compat-bar good';
+    compatEl.textContent='✓ Doğrudan vektör normalizasyon kriterleri temiz.';
+  }else{
+    compatEl.className='compat-bar warn';
+    compatEl.textContent='↪ Kaynak vektör korunuyor; yeni yüklemelerde bu yapı otomatik olarak raster fallback yoluna alınır.';
   }
-
   document.getElementById('infoOverlay').classList.add('show');
 }
 
-document.getElementById('infoClose').onclick    = ()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoCloseBtn').onclick  = ()=>document.getElementById('infoOverlay').classList.remove('show');
-document.getElementById('infoOverlay').addEventListener('click',e=>{ if(e.target===document.getElementById('infoOverlay')) document.getElementById('infoOverlay').classList.remove('show'); });
+document.getElementById('infoClose').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
+document.getElementById('infoCloseBtn').onclick=()=>document.getElementById('infoOverlay').classList.remove('show');
+document.getElementById('infoOverlay').addEventListener('click',e=>{if(e.target===document.getElementById('infoOverlay'))document.getElementById('infoOverlay').classList.remove('show');});
 
 /* ---------- arkaplan picker ---------- */
 let bgPickTarget=null;
