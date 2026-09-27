@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {
-  cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,
+  cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,normalizeArchivePath,validateScratchJrProject,
   dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,
   resolveCurrentPageIndex,selectBackgroundSvg,
   mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder
@@ -154,4 +154,32 @@ test('style elements and scripts cannot enter direct-vector path',()=>{
   assert.equal(script.activeContent,true);
   assert.equal(script.safeDirectVector,false);
   assert.ok(script.fallbackReasons.includes('active-content'));
+});
+
+test('archive paths reject traversal and absolute paths',()=>{
+  assert.equal(normalizeArchivePath('project/characters/a.svg'),'project/characters/a.svg');
+  assert.equal(normalizeArchivePath('./project//characters/a.svg'),'project/characters/a.svg');
+  assert.equal(normalizeArchivePath('../evil.svg'),null);
+  assert.equal(normalizeArchivePath('project/../../evil.svg'),null);
+  assert.equal(normalizeArchivePath('/absolute/a.svg'),null);
+  assert.equal(normalizeArchivePath('C:\\temp\\a.svg'),null);
+  assert.equal(normalizeArchivePath(''),null);
+});
+
+test('ScratchJr project validation rejects malformed page metadata',()=>{
+  const bad=validateScratchJrProject({json:{pages:'page 1'}},4);
+  assert.ok(bad.errors.some(x=>x.includes('pages')));
+
+  const duplicate=validateScratchJrProject({json:{pages:['page 1','page 1'],'page 1':{sprites:[]}}},4);
+  assert.ok(duplicate.errors.some(x=>x.includes('yinelenen')));
+
+  const tooMany=validateScratchJrProject({json:{pages:['a','b','c','d','e'],a:{},b:{},c:{},d:{},e:{}}},4);
+  assert.ok(tooMany.errors.some(x=>x.includes('en fazla 4')));
+});
+
+test('ScratchJr project validation reports recoverable missing sprites',()=>{
+  const result=validateScratchJrProject({json:{pages:['page 1'],'page 1':{sprites:['Missing 1']}}},4);
+  assert.deepEqual(result.errors,[]);
+  assert.ok(result.warnings.some(x=>x.includes('Missing 1')));
+  assert.deepEqual(result.pageKeys,['page 1']);
 });
