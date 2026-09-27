@@ -1959,11 +1959,13 @@ function safeDisplayName(value,fallback){
   return s.slice(0,80)||fallback;
 }
 
-async function importSRJ(file){
+async function importSRJ(file,progress=()=>{}){
   if(typeof JSZip==='undefined') throw new Error('Sıkıştırma kütüphanesi yüklenemedi');
   assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
+  progress(5,'Arşiv açılıyor…');
   const zip=await JSZip.loadAsync(file);
   assertZipSafety(zip);
+  progress(14,'Arşiv doğrulandı');
   const report=createImportReport(), zipIndex=buildZipIndex(zip);
 
   const dataEntries=zipIndex.files.filter(x=>/(^|\/)data\.json$/i.test(x.path));
@@ -1981,6 +1983,7 @@ async function importSRJ(file){
   if(validation.errors.length) throw new Error(validation.errors.join(' · '));
   validation.warnings.forEach(msg=>addImportIssue(report,'warning',msg));
   const wrappedData=validation.wrapped, J=validation.json, pageKeys=validation.pageKeys;
+  progress(24,'Proje metadata’sı doğrulandı');
 
   const ns={pages:[],current:resolveCurrentPageIndex(J.currentPage,pageKeys),charLib:[],bgLib:[],sounds:[],selected:null,selectedText:null,
     sjrDataMeta:wrappedData?dataMetaWithoutJson(data):{},sjrJsonMeta:jsonMetaWithoutPages(J,pageKeys)};
@@ -2038,6 +2041,7 @@ async function importSRJ(file){
     }
   }
 
+  progress(38,'Karakter ve arkaplan kütüphanesi işlendi');
   const sndNameByFile=new Map();
   if(libManifest&&typeof libManifest==='object'){
     for(const sm of safeManifestArray(libManifest.sounds,report,'sounds')){
@@ -2069,6 +2073,7 @@ async function importSRJ(file){
     }catch(err){addImportIssue(report,'skipped','Ses okunamadı: '+base);}
   }
 
+  progress(52,'Sesler işlendi');
   for(let i=0;i<pageKeys.length;i++){
     const key=pageKeys[i],po=J[key],page=newPage();
     if(po&&typeof po==='object'&&!Array.isArray(po)){
@@ -2125,13 +2130,16 @@ async function importSRJ(file){
       }
     }
     ns.pages.push(page); report.pages++;
+    progress(55+Math.round(35*(i+1)/Math.max(1,pageKeys.length)),'Sayfa '+(i+1)+' / '+pageKeys.length+' içe aktarılıyor');
   }
   if(!ns.pages.length){ns.pages.push(newPage());report.pages=1;}
+  progress(94,'Çalışma alanı hazırlanıyor…');
 
   checkpoint();
   Object.assign(state,ns); state.current=Math.max(0,Math.min(ns.current,ns.pages.length-1)); state.selected=null;
   document.getElementById('pname').value=safeDisplayName(data&&data.name,'Benim Projem').slice(0,40);
   render(); setTab('chars');
+  progress(100,'İçe aktarma tamamlandı');
   return report;
 }
 
@@ -2149,13 +2157,15 @@ document.getElementById('srjFile').addEventListener('change',async e=>{
   });
   if(!onay){ showToast('İçe aktarma iptal edildi'); return; }
   const btn=document.getElementById('importBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Yükleniyor…';
+  const op=startOperation('İçe aktarılıyor');
   try{
-    const report=await importSRJ(file);
+    const report=await importSRJ(file,op.update);
+    op.close();
     showImportReport(report);
   }catch(err){
     console.error(err);
     showToast('İçe aktarılamadı: '+(err.message||'dosya okunamadı'),'err');
-  }finally{ btn.disabled=false; btn.textContent=old; }
+  }finally{ op.close(); btn.disabled=false; btn.textContent=old; }
 });
 
 
