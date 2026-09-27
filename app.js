@@ -511,10 +511,9 @@ async function fileToAsset(file){
       const svgText=wrapRasterSvg(prev.pngURL, prev.w, prev.h);
       return { isSvg:true, vector:false, svgText, dataURL:prev.pngURL, w:prev.w, h:prev.h, img:prev.img };
     }
-    // Son çare: canvas da başarısız, SVG'yi ham tut (uyarı ver)
-    showToast('⚠ Bu SVG önizlenemiyor — yine de eklendi, görüntü bozuk olabilir','err');
-    const svgText=wrapRasterSvg(svgDataURL, w, h);
-    return { isSvg:true, vector:false, svgText, dataURL:svgDataURL, w, h, img };
+    // Güvenli rasterizasyon başarısızsa data:image/svg+xml wrapper üretme;
+    // bu yapı ScratchJr tarafında 0×0 / render hatalarına yol açabiliyor.
+    throw new Error('SVG güvenli biçimde rasterize edilemedi');
   }
   const dataURL=await readAsDataURL(file);
   const baseImg=await loadImage(dataURL);
@@ -1527,7 +1526,7 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 
 let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null;
 
-function stopCurrentSound(){
+function stopCurrentSound(shouldRender=true){
   if(currentPlayingNode){
     try{currentPlayingNode.stop();}catch(e){}
     try{currentPlayingNode.disconnect();}catch(e){}
@@ -1535,7 +1534,7 @@ function stopCurrentSound(){
   }
   currentPlayingId=null; _playStartTime=null;
   cancelAnimationFrame(_playRafId);
-  renderSounds();
+  if(shouldRender) renderSounds();
 }
 
 function togglePlaySound(s){
@@ -1565,7 +1564,7 @@ function togglePlaySound(s){
 function playSound(s){ togglePlaySound(s); }
 
 function disposeAudioResources(){
-  stopCurrentSound();
+  stopCurrentSound(false);
   const contexts=[audioCtx,_waveAudioCtx];
   audioCtx=null; _waveAudioCtx=null;
   contexts.forEach(ctx=>closeAudioContext(ctx));
