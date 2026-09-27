@@ -2092,7 +2092,7 @@ async function exportSRJ(pagesArg){
       bgManifest.push({file:fn, name:it.name||'Arkaplan'});
     }
     // srjlib.json — import sırasında tüm bgLib'i geri yüklemek için
-    const sndManifest=state.sounds.map(s=>({file:'SND'+md5buf(s.buf)+'.'+s.ext, name:s.name}));
+    const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
     root.file('srjlib.json', JSON.stringify({backgrounds:bgManifest, sounds:sndManifest}));
 
     const data={ id:String(Math.floor(Date.now()/1000)), name, ctime:new Date().toISOString(), mtime:String(Date.now()),
@@ -2352,7 +2352,7 @@ function showSvgInfo(libItem){
   // ── Genel istatistikler ────────────────────────────────────────────────────
   const genRows = [
     ['Dosya boyutu', (a.byteSize/1024).toFixed(1)+' KB'],
-    ['Path sayısı',  a.paths+(a.paths>50?' (birleştirildi ✓)':'')],
+    ['Path sayısı',  a.paths],
     ['Benzersiz renk (= path)', a.colors+(a.colors>100?' ⚠':'')],
     ['Boyut',        a.w+' × '+a.h],
     ['viewBox',      a.vbVal],
