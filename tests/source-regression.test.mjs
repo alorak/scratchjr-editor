@@ -131,12 +131,13 @@ test('import resolver avoids ambiguous basename fallback and unsafe paths',async
   assert.doesNotMatch(app,/function buildZipIndex\(zip\)/);
 });
 
-test('import validates project metadata before replacing state',()=>{
+test('import validates project metadata before replacing state',async()=>{
   const validateAt=app.indexOf('validateScratchJrProject(data,MAX_PAGES)');
   const assignAt=app.indexOf('Object.assign(state,ns)');
   assert.ok(validateAt>=0&&assignAt>validateAt);
   assert.match(app,/readJsonEntry\(dataFile,'data\.json'\)/);
-  assert.match(app,/MAX_METADATA_BYTES=2\*MB/);
+  const archive=await readFile(new URL('../sjr-archive-utils.mjs',import.meta.url),'utf8');
+  assert.match(archive,/readJsonEntry\(entry,label,maxBytes=2\*1024\*1024\)/);
   assert.match(app,/checkpoint\(\);\s*Object\.assign\(state,ns\)/);
 });
 
