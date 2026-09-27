@@ -261,12 +261,13 @@ test('tabs use roving keyboard navigation and tabpanel semantics',async()=>{
   assert.match(app,/p\.hidden=!active/);
 });
 
-test('dialogs share focus trap escape handling and focus restoration',()=>{
-  assert.match(app,/const dialogState=new WeakMap\(\),dialogStack=\[\]/);
-  assert.match(app,/function showDialog\(overlay,initialFocus,onEscape\)/);
-  assert.match(app,/function hideDialog\(overlay,restoreFocus=true\)/);
-  assert.match(app,/if\(e\.key!=='Tab'\) return/);
-  assert.match(app,/stateForDialog\?\.opener\?\.isConnected/);
+test('dialogs share focus trap escape handling and focus restoration',async()=>{
+  const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
+  assert.match(ui,/const dialogState=new WeakMap\(\),dialogStack=\[\]/);
+  assert.match(ui,/function showDialog\(overlay,initialFocus,onEscape\)/);
+  assert.match(ui,/function hideDialog\(overlay,restoreFocus=true\)/);
+  assert.match(ui,/if\(e\.key!=='Tab'\) return/);
+  assert.match(ui,/stateForDialog\?\.opener\?\.isConnected/);
   assert.match(app,/showDialog\(overlay,recBtn,closeModal\)/);
   assert.match(app,/showDialog\(ov,document\.getElementById\('importReportClose'\),closeImportReport\)/);
   assert.match(app,/showDialog\(ov,okBtn,\(\)=>close\(false\)\)/);
