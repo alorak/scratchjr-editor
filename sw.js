@@ -34,10 +34,10 @@ async function cacheSuccessful(request,response){
   return response;
 }
 
-async function networkFirst(request,fallbackRequest=request){
+async function networkFirst(request,fallbackRequest=request,cacheRequest=request){
   try{
     const response=await fetch(request);
-    return await cacheSuccessful(request,response);
+    return await cacheSuccessful(cacheRequest,response);
   }catch(err){
     const cached=await caches.match(fallbackRequest);
     if(cached) return cached;
@@ -51,7 +51,7 @@ self.addEventListener('fetch',event=>{
   if(url.origin!==self.location.origin) return;
 
   if(event.request.mode==='navigate'){
-    event.respondWith(networkFirst(event.request,'./index.html'));
+    event.respondWith(networkFirst(event.request,'./index.html','./index.html'));
     return;
   }
 
