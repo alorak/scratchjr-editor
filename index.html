@@ -30,6 +30,9 @@
     <label for="pname">Proje adı</label>
     <input id="pname" value="Benim Projem" maxlength="40" spellcheck="false">
   </div>
+  <div class="autosave-status" id="autosaveStatus" role="status" aria-live="polite" aria-atomic="true">
+    <span class="autosave-dot" aria-hidden="true"></span><span id="autosaveStatusText">Hazır</span>
+  </div>
   <button class="btn ghost history-btn" id="undoBtn" title="Geri al (Ctrl/⌘+Z)" aria-label="Geri al" disabled>↶</button>
   <button class="btn ghost history-btn" id="redoBtn" title="Yinele (Ctrl/⌘+Shift+Z)" aria-label="Yinele" disabled>↷</button>
   <button class="btn import" id="importBtn">⬆ İçe Aktar</button>
