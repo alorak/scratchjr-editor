@@ -69,3 +69,65 @@ export function selectBackgroundSvg(asset,coverSvg){
   if(asset&&asset.vector&&asset.svgText) return asset.svgText;
   return coverSvg(asset);
 }
+
+function countTag(text,tag){
+  const m=String(text||'').match(new RegExp('<'+tag+'(?:\\s|>)','gi'));
+  return m?m.length:0;
+}
+
+function countArcPaths(text){
+  let count=0;
+  const re=/<path\b[^>]*\bd\s*=\s*(["'])(.*?)\1/gis;
+  let m;
+  while((m=re.exec(String(text||'')))) if(/[Aa](?=[\s,0-9+.-])/.test(m[2])) count++;
+  return count;
+}
+
+export function inspectSvgCompatibility(text){
+  const src=String(text||'');
+  const vb=src.match(/\bviewBox\s*=\s*(["'])\s*([^"']+)\1/i);
+  const vbNums=vb?vb[2].trim().split(/[\s,]+/).map(Number):[];
+  const viewBoxValid=vbNums.length===4&&vbNums.every(Number.isFinite)&&vbNums[2]>0&&vbNums[3]>0;
+  const viewBoxOriginNonZero=viewBoxValid&&(Math.abs(vbNums[0])>1e-6||Math.abs(vbNums[1])>1e-6);
+  const unsupportedTags={
+    rect:countTag(src,'rect'),
+    ellipse:countTag(src,'ellipse'),
+    line:countTag(src,'line'),
+    polyline:countTag(src,'polyline'),
+    text:countTag(src,'text'),
+    use:countTag(src,'use'),
+    foreignObject:countTag(src,'foreignObject')
+  };
+  const effectTags={
+    clipPath:countTag(src,'clipPath'),
+    mask:countTag(src,'mask'),
+    filter:countTag(src,'filter'),
+    linearGradient:countTag(src,'linearGradient'),
+    radialGradient:countTag(src,'radialGradient'),
+    pattern:countTag(src,'pattern')
+  };
+  const unsupportedCount=Object.values(unsupportedTags).reduce((a,b)=>a+b,0);
+  const effectCount=Object.values(effectTags).reduce((a,b)=>a+b,0);
+  const hasEmbeddedImage=/<image(?:\s|>)/i.test(src);
+  const transformCount=(src.match(/\btransform\s*=/gi)||[]).length;
+  const styleCount=(src.match(/\bstyle\s*=/gi)||[]).length;
+  const arcPaths=countArcPaths(src);
+  const rootPresentation=hasSvgRootPresentation(src);
+  const externalRefs=/\b(?:href|xlink:href)\s*=\s*(["'])\s*(?:https?:|\/\/)/i.test(src);
+  const reasons=[];
+  if(transformCount) reasons.push('transform');
+  if(rootPresentation) reasons.push('root-presentation');
+  if(styleCount) reasons.push('style-attribute');
+  if(arcPaths) reasons.push('arc-command');
+  if(unsupportedCount) reasons.push('unsupported-elements');
+  if(effectCount) reasons.push('paint-effects');
+  if(viewBoxOriginNonZero) reasons.push('nonzero-viewbox-origin');
+  if(externalRefs) reasons.push('external-reference');
+  return {
+    hasEmbeddedImage,transformCount,styleCount,arcPaths,rootPresentation,externalRefs,
+    viewBoxValid,viewBoxOriginNonZero,viewBox:vbNums,
+    unsupportedTags,unsupportedCount,effectTags,effectCount,
+    safeDirectVector:!hasEmbeddedImage&&reasons.length===0,
+    fallbackReasons:reasons
+  };
+}
