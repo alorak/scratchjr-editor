@@ -351,7 +351,7 @@ test('audio recorder and SJR archive helpers are extracted and cached offline',a
 });
 
 
-test('SJR transfer controller owns orchestration while app keeps thin UI wiring',()=>{
+test('SJR transfer controller owns orchestration while app keeps thin UI wiring',async()=>{
   assert.match(app,/from '\.\/sjr-import-export\.mjs'/);
   assert.match(app,/createSjrTransferController\(\{/);
   assert.match(app,/sjrTransfer\.exportProject\(\)/);
@@ -361,4 +361,6 @@ test('SJR transfer controller owns orchestration while app keeps thin UI wiring'
   assert.match(transfer,/export function createSjrTransferController/);
   assert.match(transfer,/async function exportProject\(pagesArg\)/);
   assert.match(transfer,/async function importProject\(file,progress=\(\)=>\{\}\)/);
+  const sw=await readFile(new URL('../sw.js',import.meta.url),'utf8');
+  assert.ok(sw.includes('sjr-import-export.mjs'),'SJR transfer controller missing from service-worker cache');
 });
