@@ -117,7 +117,7 @@ test('controller exports a minimal project and restores transfer buttons',async(
       URL:{createObjectURL:()=> 'blob:test',revokeObjectURL(){}},
       setTimeout(fn){fn();}
     },
-    JSZip,SparkMD5,state,newPage,nextId:()=> 'i1',
+    JSZip,SparkMD5,zipOutputType:'nodebuffer',state,newPage,nextId:()=> 'i1',
     checkpoint(){},render(){},setTab(){},
     showToast:(msg,kind)=>toasts.push([msg,kind]),
     startOperation:()=>({
