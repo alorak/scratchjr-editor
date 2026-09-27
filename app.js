@@ -1,6 +1,9 @@
 import {cloneJson,hasSvgTransform,hasSvgRootPresentation,inspectSvgCompatibility,normalizeArchivePath,validateScratchJrProject,dataMetaWithoutJson,jsonMetaWithoutPages,pageMetaWithoutSprites,resolveCurrentPageIndex,selectBackgroundSvg,mergeSpriteMeta,mergePreservedSounds,mergeLayerOrder} from './roundtrip-utils.mjs';
 import {createDialogManager,startOperation} from './ui-utils.mjs';
 import {assertFileSize,b64,readAsDataURL,readAsText,loadImage,svgDims,wrapRasterSvg,escapeHtml,colorToHex} from './file-utils.mjs';
+import {ensureAudioContext,closeAudioContext,waveformPeaks} from './audio-utils.mjs';
+import {createAudioRecorder} from './audio-recorder.mjs';
+import {assertZipSafety,readJsonEntry,buildZipIndex,createImportReport,addImportIssue,resolveZipFile,safeManifestArray,safeDisplayName} from './sjr-archive-utils.mjs';
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(err=>console.warn('Service worker registration failed',err)));
@@ -203,27 +206,6 @@ async function restoreAutosave(){
 }
 
 /* ---------- dosya okuma ---------- */
-function assertZipSafety(zip){
-  let entries=0,total=0,largest=0;
-  zip.forEach((p,zf)=>{
-    if(zf.dir) return;
-    entries++;
-    const original=zf.unsafeOriginalName||p;
-    if(!normalizeArchivePath(original)) throw new Error('Arşiv güvensiz dosya yolu içeriyor: '+String(original).slice(0,120));
-    const n=Number(zf?._data?.uncompressedSize||0);
-    if(Number.isFinite(n)){ total+=n; largest=Math.max(largest,n); }
-  });
-  if(entries>MAX_ZIP_ENTRIES) throw new Error('Arşiv çok fazla dosya içeriyor');
-  if(largest>MAX_ZIP_ENTRY) throw new Error('Arşivde izin verilenden büyük bir dosya var');
-  if(total>MAX_ZIP_UNCOMPRESSED) throw new Error('Arşivin açılmış boyutu güvenli sınırı aşıyor');
-}
-async function readJsonEntry(entry,label,maxBytes=MAX_METADATA_BYTES){
-  const hinted=Number(entry?._data?.uncompressedSize||0);
-  if(Number.isFinite(hinted)&&hinted>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
-  const text=await entry.async('string');
-  if(new TextEncoder().encode(text).length>maxBytes) throw new Error(label+' izin verilen metadata boyutunu aşıyor');
-  try{return JSON.parse(text);}catch(e){throw new Error(label+' geçerli JSON değil');}
-}
 /* Inkscape/harici SVG'yi ScratchJr'ın beklediği sade path-tabanlı formata normalleştirir.
    pxW/pxH: tarayıcının mm→px dönüşümünden gelen gerçek piksel boyutları
    Döndürür: {text, w, h} veya null. w/h = SVG'nin kanonik boyutları (ScratchJr'ın
@@ -769,31 +751,13 @@ function renderSounds(){
   });
 }
 
-const AudioContextCtor=window.AudioContext||window.webkitAudioContext;
-let _waveAudioCtx=null;
-function ensureAudioContext(ctx){
-  if(!AudioContextCtor) throw new Error('Web Audio desteklenmiyor');
-  return (!ctx||ctx.state==='closed')?new AudioContextCtor():ctx;
-}
-function closeAudioContext(ctx){
-  if(ctx&&ctx.state!=='closed') return ctx.close().catch(()=>{});
-  return Promise.resolve();
-}
 async function loadAndDrawWave(s,cvs,durEl){
   if(!s._waveData){
     try{
       _waveAudioCtx=ensureAudioContext(_waveAudioCtx);
       const decoded=await _waveAudioCtx.decodeAudioData(s.buf.slice(0));
       s._duration=decoded.duration;
-      const ch=decoded.getChannelData(0);
-      const N=300, block=Math.floor(ch.length/N);
-      const peaks=[];
-      for(let i=0;i<N;i++){
-        let pk=0;
-        for(let j=0;j<block;j++) pk=Math.max(pk,Math.abs(ch[i*block+j]||0));
-        peaks.push(pk);
-      }
-      s._waveData=peaks;
+      s._waveData=waveformPeaks(decoded,300);
       if(durEl) durEl.textContent=fmtDur(s._duration);
     }catch(e){ s._waveData=[]; }
   }
@@ -1238,344 +1202,13 @@ document.getElementById('sndFile').addEventListener('change',async e=>{
 });
 
 /* ---- SES KAYIT MODALI ---- */
-(function(){
-  // State
-  let mediaRecorder=null, stream=null, chunks=[], actx=null, analyser=null, mediaSource=null;
-  let animId=null, playAnimId=null;
-  let isRecording=false, startTime=0, waveData=[], lastSampleAt=0, discardOnStop=false;
-  let recBlob=null, blobUrl=null, startRequestId=0;
-  let trimStart=0, trimEnd=1;
-  let dragHandle=null, dragStartX=0, dragStartPct=0;
-  const SAMPLE_MS=50, MAX_MS=60000;
-
-  // Elements
-  const overlay=document.getElementById('srecOverlay');
-  const cvs=document.getElementById('srecCanvas');
-  const vizEl=document.getElementById('srecViz');
-  const timer=document.getElementById('srecTimer');
-  const recBtn=document.getElementById('srecRecBtn');
-  const playBtn=document.getElementById('srecPlayBtn');
-  const stopBtn=document.getElementById('srecStopBtn');
-  const addBtn=document.getElementById('srecAddBtn');
-  const audio=document.getElementById('srecAudio');
-  const tl=document.getElementById('srecTL');
-  const tr=document.getElementById('srecTR');
-  const ol=document.getElementById('srecOL');
-  const or_=document.getElementById('srecOR');
-
-  function nextName(){
-    const used=state.sounds.map(s=>s.name);
-    for(let i=0;i<26;i++){
-      const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i];
-      if(!used.includes('Ses '+n)) return 'Ses '+n;
-    }
-    return 'Ses '+(state.sounds.length+1);
-  }
-
-  function fmtTime(ms){
-    const s=Math.floor(ms/1000)%60, m=Math.floor(ms/60000), cs=Math.floor((ms%1000)/10);
-    return '00:'+String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')+'.'+String(cs).padStart(2,'0');
-  }
-
-  function resizeCvs(){
-    cvs.width=vizEl.clientWidth||440;
-    cvs.height=vizEl.clientHeight||120;
-  }
-
-  function setPlayStop(pe,se){
-    playBtn.disabled=!pe; playBtn.style.opacity=pe?'1':'.45';
-    stopBtn.disabled=!se; stopBtn.style.opacity=se?'1':'.45';
-  }
-
-  // During recording: bars grow left-to-right based on elapsed time
-  function drawLive(){
-    const ctx=cvs.getContext('2d');
-    const W=cvs.width, H=cvs.height, cy=H/2, maxH=cy*0.88;
-    ctx.fillStyle='#ddf0f9'; ctx.fillRect(0,0,W,H);
-    ctx.beginPath(); ctx.strokeStyle='#c4e9f6'; ctx.lineWidth=1;
-    ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke();
-    if(!waveData.length) return;
-    const pxPerSlot=W/(MAX_MS/SAMPLE_MS);
-    const barW=Math.max(1.5,pxPerSlot*0.75);
-    ctx.beginPath(); ctx.strokeStyle='#1a7dc7'; ctx.lineWidth=barW; ctx.lineCap='round';
-    for(let i=0;i<waveData.length;i++){
-      const x=i*pxPerSlot+pxPerSlot/2;
-      const h=waveData[i]*maxH;
-      ctx.moveTo(x,cy-h); ctx.lineTo(x,cy+h);
-    }
-    ctx.stroke();
-    const headX=waveData.length*pxPerSlot;
-    ctx.beginPath(); ctx.strokeStyle='rgba(255,70,70,.7)'; ctx.lineWidth=2;
-    ctx.moveTo(headX,0); ctx.lineTo(headX,H); ctx.stroke();
-  }
-
-  // After recording: full waveform stretched to canvas width
-  function drawStatic(progress){
-    const ctx=cvs.getContext('2d');
-    const W=cvs.width, H=cvs.height, cy=H/2, maxH=cy*0.88;
-    ctx.fillStyle='#ddf0f9'; ctx.fillRect(0,0,W,H);
-    ctx.beginPath(); ctx.strokeStyle='#c4e9f6'; ctx.lineWidth=1;
-    ctx.moveTo(0,cy); ctx.lineTo(W,cy); ctx.stroke();
-    if(waveData.length){
-      const n=waveData.length, pxPerSlot=W/n;
-      const barW=Math.max(1.5,pxPerSlot*0.75);
-      ctx.beginPath(); ctx.strokeStyle='#1a7dc7'; ctx.lineWidth=barW; ctx.lineCap='round';
-      for(let i=0;i<n;i++){
-        const x=i*pxPerSlot+pxPerSlot/2;
-        const h=waveData[i]*maxH;
-        ctx.moveTo(x,cy-h); ctx.lineTo(x,cy+h);
-      }
-      ctx.stroke();
-    }
-    if(progress!=null && progress>=0){
-      const cx=(trimStart+(trimEnd-trimStart)*progress)*W;
-      ctx.beginPath(); ctx.strokeStyle='#FF4444'; ctx.lineWidth=2;
-      ctx.moveTo(cx,0); ctx.lineTo(cx,H); ctx.stroke();
-    }
-  }
-
-  function drawIdle(){
-    const ctx=cvs.getContext('2d'), cy=cvs.height/2;
-    ctx.fillStyle='#ddf0f9'; ctx.fillRect(0,0,cvs.width,cvs.height);
-    ctx.beginPath(); ctx.strokeStyle='#a0d8ef'; ctx.lineWidth=1;
-    ctx.moveTo(0,cy); ctx.lineTo(cvs.width,cy); ctx.stroke();
-  }
-
-  // Trim handles
-  function showTrim(){
-    trimStart=0; trimEnd=1;
-    [tl,tr,ol,or_].forEach(el=>el.style.display='block');
-    updateTrim();
-  }
-  function hideTrim(){
-    [tl,tr,ol,or_].forEach(el=>el.style.display='none');
-  }
-  function updateTrim(){
-    const W=vizEl.clientWidth||cvs.width;
-    const lx=trimStart*W, rx=trimEnd*W;
-    tl.style.left=lx+'px';
-    tr.style.left=(rx-14)+'px';
-    ol.style.width=lx+'px';
-    or_.style.left=rx+'px'; or_.style.width=(W-rx)+'px';
-  }
-  function startDrag(handle,e){
-    dragHandle=handle; dragStartX=e.clientX;
-    dragStartPct=handle==='L'?trimStart:trimEnd;
-    if(e.currentTarget.setPointerCapture) e.currentTarget.setPointerCapture(e.pointerId);
-    document.addEventListener('pointermove',onDrag);
-    document.addEventListener('pointerup',endDrag);
-    document.addEventListener('pointercancel',endDrag);
-    e.preventDefault();
-  }
-  function onDrag(e){
-    const W=vizEl.clientWidth||cvs.width;
-    const p=Math.max(0,Math.min(1,dragStartPct+(e.clientX-dragStartX)/W));
-    if(dragHandle==='L') trimStart=Math.min(p,trimEnd-0.02);
-    else trimEnd=Math.max(p,trimStart+0.02);
-    updateTrim();
-  }
-  function endDrag(){
-    dragHandle=null;
-    document.removeEventListener('pointermove',onDrag);
-    document.removeEventListener('pointerup',endDrag);
-    document.removeEventListener('pointercancel',endDrag);
-  }
-  tl.onpointerdown=e=>startDrag('L',e);
-  tr.onpointerdown=e=>startDrag('R',e);
-
-  // WAV encoder
-  function toWav(buf){
-    const nc=buf.numberOfChannels,sr=buf.sampleRate,len=buf.length;
-    const ab=new ArrayBuffer(44+len*nc*2),dv=new DataView(ab);
-    const ws=(o,s)=>{for(let i=0;i<s.length;i++)dv.setUint8(o+i,s.charCodeAt(i));};
-    ws(0,'RIFF');dv.setUint32(4,36+len*nc*2,true);ws(8,'WAVE');
-    ws(12,'fmt ');dv.setUint32(16,16,true);dv.setUint16(20,1,true);
-    dv.setUint16(22,nc,true);dv.setUint32(24,sr,true);
-    dv.setUint32(28,sr*nc*2,true);dv.setUint16(32,nc*2,true);dv.setUint16(34,16,true);
-    ws(36,'data');dv.setUint32(40,len*nc*2,true);
-    let o=44;
-    for(let i=0;i<len;i++) for(let c=0;c<nc;c++){
-      const s=Math.max(-1,Math.min(1,buf.getChannelData(c)[i]));
-      dv.setInt16(o,s<0?s*0x8000:s*0x7FFF,true);o+=2;
-    }
-    return ab;
-  }
-
-  // Open / close
-  function openModal(){
-    startRequestId++;
-    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-    chunks=[];waveData=[];isRecording=false;recBlob=null;lastSampleAt=0;discardOnStop=false;
-    recBtn.disabled=false;
-    trimStart=0;trimEnd=1;
-    audio.src='';
-    recBtn.classList.remove('recording');
-    setPlayStop(false,false);
-    addBtn.style.display='none'; addBtn.disabled=false; addBtn.textContent='✅ Projeye Ekle';
-    hideTrim();
-    timer.textContent='00:00:00.00';
-    document.getElementById('srecTitle').textContent=nextName();
-    showDialog(overlay,recBtn,closeModal);
-    requestAnimationFrame(()=>{resizeCvs();drawIdle();});
-  }
-
-  function closeModal(){
-    startRequestId++;
-    hideDialog(overlay);
-    recBtn.disabled=false;
-    if(isRecording) stopRec(false);
-    stopPlayback();
-    cancelAnimationFrame(animId);
-    if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-    if(mediaSource){try{mediaSource.disconnect();}catch(e){} mediaSource=null;}
-    if(analyser){try{analyser.disconnect();}catch(e){} analyser=null;}
-    if(actx){closeAudioContext(actx);actx=null;}
-    if(blobUrl){URL.revokeObjectURL(blobUrl);blobUrl=null;}
-    audio.removeAttribute('src'); audio.load();
-    hideTrim();
-    addBtn.style.display='none';
-  }
-
-  // Recording
-  async function startRec(){
-    if(isRecording||recBtn.disabled) return;
-    const requestId=++startRequestId;
-    recBtn.disabled=true;
-    let requestedStream=null;
-    try{
-      requestedStream=await navigator.mediaDevices.getUserMedia({audio:true});
-      if(requestId!==startRequestId||!overlay.classList.contains('show')){
-        requestedStream.getTracks().forEach(t=>t.stop());
-        requestedStream=null;
-        return;
-      }
-      stream=requestedStream; requestedStream=null;
-      actx=ensureAudioContext(actx);
-      if(actx.state==='suspended') await actx.resume();
-      if(requestId!==startRequestId||!overlay.classList.contains('show')){
-        if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
-        return;
-      }
-      analyser=actx.createAnalyser(); analyser.fftSize=1024;
-      mediaSource=actx.createMediaStreamSource(stream); mediaSource.connect(analyser);
-      chunks=[];waveData=[];lastSampleAt=0;discardOnStop=false;
-      const mime=MediaRecorder.isTypeSupported('audio/webm')?'audio/webm':'audio/ogg';
-      mediaRecorder=new MediaRecorder(stream,{mimeType:mime});
-      mediaRecorder.ondataavailable=e=>{if(e.data.size>0)chunks.push(e.data);};
-      mediaRecorder.onstop=onRecStop;
-      mediaRecorder.start(100);
-      isRecording=true; startTime=Date.now();
-      recBtn.classList.add('recording');
-      const fbuf=new Uint8Array(analyser.frequencyBinCount);
-      function loop(){
-        if(!isRecording) return;
-        const now=Date.now()-startTime;
-        analyser.getByteTimeDomainData(fbuf);
-        if(now-lastSampleAt>=SAMPLE_MS){
-          let pk=0; for(let i=0;i<fbuf.length;i++) pk=Math.max(pk,Math.abs(fbuf[i]-128)/128);
-          waveData.push(pk); lastSampleAt=now;
-        }
-        timer.textContent=fmtTime(now);
-        drawLive();
-        animId=requestAnimationFrame(loop);
-      }
-      loop();
-      setTimeout(()=>{if(isRecording&&requestId===startRequestId)stopRec(true);},MAX_MS);
-    }catch(e){
-      if(requestId===startRequestId) showToast('Mikrofon erişimi reddedildi veya kullanılamıyor');
-    }finally{
-      if(requestedStream) requestedStream.getTracks().forEach(t=>t.stop());
-      if(requestId===startRequestId) recBtn.disabled=false;
-    }
-  }
-
-  function stopRec(keep){
-    if(!mediaRecorder||mediaRecorder.state==='inactive') return;
-    isRecording=false; discardOnStop=!keep;
-    recBtn.classList.remove('recording');
-    cancelAnimationFrame(animId);
-    mediaRecorder.stop();
-    if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
-    if(!keep){waveData=[];drawIdle();}
-  }
-
-  async function onRecStop(){
-    if(discardOnStop){chunks=[];recBlob=null;discardOnStop=false;return;}
-    if(!chunks.length) return;
-    const mime=chunks[0].type||'audio/webm';
-    recBlob=new Blob(chunks,{type:mime});
-    if(blobUrl) URL.revokeObjectURL(blobUrl);
-    blobUrl=URL.createObjectURL(recBlob);
-    audio.src=blobUrl;
-    setPlayStop(true,false);
-    drawStatic(null);
-    showTrim();
-    addBtn.style.display='block';
-  }
-
-  // Playback
-  function stopPlayback(){
-    audio.pause(); audio.currentTime=0;
-    cancelAnimationFrame(playAnimId);
-    setPlayStop(!!blobUrl,false);
-    drawStatic(null);
-  }
-
-  playBtn.onclick=()=>{
-    if(!blobUrl) return;
-    audio.currentTime=(audio.duration||0)*trimStart;
-    audio.play().catch(()=>{});
-    setPlayStop(false,true);
-    function ploop(){
-      if(audio.paused||audio.ended){stopPlayback();return;}
-      if(audio.duration&&audio.currentTime>=audio.duration*trimEnd){stopPlayback();return;}
-      const prog=audio.duration?(audio.currentTime/audio.duration-trimStart)/(trimEnd-trimStart):0;
-      drawStatic(Math.max(0,Math.min(1,prog)));
-      playAnimId=requestAnimationFrame(ploop);
-    }
-    ploop();
-  };
-  stopBtn.onclick=stopPlayback;
-
-  // Add to project with trim + WAV encode
-  addBtn.onclick=async()=>{
-    if(!recBlob) return;
-    addBtn.disabled=true; addBtn.textContent='Ekleniyor…';
-    let ac=null;
-    try{
-      const raw=await recBlob.arrayBuffer();
-      ac=ensureAudioContext(null);
-      const decoded=await ac.decodeAudioData(raw);
-      const sStart=Math.floor(trimStart*decoded.length);
-      const sEnd=Math.floor(trimEnd*decoded.length);
-      const trimLen=Math.max(1,sEnd-sStart);
-      const off=new OfflineAudioContext(decoded.numberOfChannels,trimLen,decoded.sampleRate);
-      const src=off.createBufferSource();
-      src.buffer=decoded; src.connect(off.destination);
-      src.start(0,trimStart*decoded.duration,(trimEnd-trimStart)*decoded.duration);
-      const trimmed=await off.startRendering();
-      const wav=toWav(trimmed);
-      const name=document.getElementById('srecTitle').textContent;
-      checkpoint();
-      state.sounds.push({id:nextId(),name,buf:wav,ext:'wav'});
-      renderBadges(); renderSounds(); scheduleAutosave();
-      showToast('Ses projeye eklendi');
-      closeModal();
-    }catch(e){
-      showToast('Hata: '+e.message);
-      addBtn.disabled=false; addBtn.textContent='✅ Projeye Ekle';
-    }finally{
-      if(ac) await closeAudioContext(ac);
-    }
-  };
-
-  // Wire up
-  document.getElementById('sndRecord').onclick=openModal;
-  document.getElementById('srecClose').onclick=closeModal;
-  overlay.addEventListener('click',e=>{if(e.target===overlay)closeModal();});
-  recBtn.onclick=()=>{if(isRecording)stopRec(true);else startRec();};
-})();
-
+const audioRecorderController=createAudioRecorder({
+  document,window,showDialog,hideDialog,showToast,checkpoint,nextId,
+  getSounds:()=>state.sounds,
+  addSound:sound=>state.sounds.push(sound),
+  onSoundsChanged:()=>{renderBadges();renderSounds();},
+  scheduleAutosave
+});
 
 let audioCtx=null, currentPlayingNode=null, currentPlayingId=null, _playStartTime=null, _playRafId=null, playbackGeneration=0;
 
@@ -1627,6 +1260,7 @@ function togglePlaySound(s){
 function playSound(s){ togglePlaySound(s); }
 
 function disposeAudioResources(){
+  audioRecorderController.dispose();
   stopCurrentSound(false);
   const contexts=[audioCtx,_waveAudioCtx];
   audioCtx=null; _waveAudioCtx=null;
@@ -1829,65 +1463,12 @@ async function svgTextToAsset(text,opts={}){
   let img; try{ img=await loadImage(dataURL); }catch(e){ img=new Image(); }
   return { isSvg:true, vector:!hasImage, preserveSvg:!!opts.preserveSvg, svgText:text, dataURL, w:w||150, h:h||150, img };
 }
-function buildZipIndex(zip){
-  const byPath=new Map(),byBase=new Map(),files=[];
-  zip.forEach((p,zf)=>{
-    if(zf.dir) return;
-    const safe=normalizeArchivePath(p);
-    if(!safe) return;
-    const key=safe.toLowerCase();
-    byPath.set(key,zf); files.push({path:safe,file:zf});
-    const base=safe.split('/').pop().toLowerCase();
-    const arr=byBase.get(base)||[]; arr.push({path:safe,file:zf}); byBase.set(base,arr);
-  });
-  return {byPath,byBase,files};
-}
-function createImportReport(){
-  return {pages:0,characters:0,texts:0,backgrounds:0,sounds:0,issues:[]};
-}
-function addImportIssue(report,kind,message){
-  if(report.issues.length>=100) return;
-  const key=kind+'|'+message;
-  if(!report._seen) Object.defineProperty(report,'_seen',{value:new Set(),enumerable:false});
-  if(report._seen.has(key)) return;
-  report._seen.add(key); report.issues.push({kind,message});
-}
-function resolveZipFile(index,candidates,report,label){
-  const safeCandidates=[];
-  for(const raw of candidates){
-    const safe=normalizeArchivePath(raw);
-    if(!safe){ addImportIssue(report,'warning',(label||'Asset')+' için güvensiz yol reddedildi: '+String(raw).slice(0,100)); continue; }
-    safeCandidates.push(safe);
-    const exact=index.byPath.get(safe.toLowerCase());
-    if(exact) return exact;
-  }
-  const base=(safeCandidates[0]||'').split('/').pop().toLowerCase();
-  if(!base) return null;
-  const matches=index.byBase.get(base)||[];
-  if(matches.length===1){
-    addImportIssue(report,'warning',(label||base)+' beklenen klasörde değildi; '+matches[0].path+' kullanıldı');
-    return matches[0].file;
-  }
-  if(matches.length>1) addImportIssue(report,'warning',(label||base)+' için '+matches.length+' aynı adlı dosya bulundu; belirsiz olduğu için atlandı');
-  return null;
-}
-function safeManifestArray(value,report,label){
-  if(value==null) return [];
-  if(!Array.isArray(value)){addImportIssue(report,'warning',label+' manifest alanı dizi değil; atlandı');return [];}
-  if(value.length>MAX_MANIFEST_ITEMS){addImportIssue(report,'warning',label+' manifest alanı '+MAX_MANIFEST_ITEMS+' öğeyle sınırlandı');}
-  return value.slice(0,MAX_MANIFEST_ITEMS);
-}
-function safeDisplayName(value,fallback){
-  const s=String(value??'').replace(/[\u0000-\u001f\u007f]/g,' ').trim();
-  return s.slice(0,80)||fallback;
-}
-
 async function importSRJ(file,progress=()=>{}){
   if(typeof JSZip==='undefined') throw new Error('Sıkıştırma kütüphanesi yüklenemedi');
   assertFileSize(file,MAX_SJR_BYTES,'.sjr dosyası');
   progress(5,'Arşiv açılıyor…');
   const zip=await JSZip.loadAsync(file);
-  assertZipSafety(zip);
+  assertZipSafety(zip,{maxEntries:MAX_ZIP_ENTRIES,maxEntryBytes:MAX_ZIP_ENTRY,maxTotalBytes:MAX_ZIP_UNCOMPRESSED});
   progress(14,'Arşiv doğrulandı');
   const report=createImportReport(), zipIndex=buildZipIndex(zip);
 
