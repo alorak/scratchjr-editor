@@ -14,6 +14,9 @@ Tarayıcıda çalışan, ScratchJr `.sjr` projelerini oluşturmak, içe aktarmak
 - Undo / redo
 - IndexedDB tabanlı otomatik kayıt; “Değişiklik var / Kaydediliyor / Kaydedildi” durum göstergesi ve hata bildirimi
 - Thumbnail cache + debounce ile drag, text/color ve resize işlemlerinde daha düşük render maliyeti
+- İçe/dışa aktarma aşama göstergesi ve gerçek ZIP sıkıştırma yüzdesi
+- Modal focus trap, ESC/focus-return yönetimi ve ok tuşlarıyla sekme gezinmesi
+- Telefon/tablet için yatay sayfa şeridi, tek sütun sahne düzeni ve büyütülmüş touch hedefleri
 - Klavye ve dokunmatik kullanım iyileştirmeleri
 - Görsel, ses ve .sjr importlarında boyut/arşiv güvenlik sınırları
 - İçe aktarma doğrulaması: bozuk metadata, eksik/belirsiz asset ve duplicate basename raporu
@@ -48,7 +51,7 @@ npm test
 npm run ci
 ```
 
-Testler; fixture tabanlı script/metadata koruması, gerçek-dünya ScratchJr alanlarıyla oluşturulan .sjr ZIP round-trip'i, import path traversal/duplicate basename kontrolleri, bozuk ScratchJr metadata doğrulaması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, SVG fallback politikası, CSP/offline runtime, service worker, audio lifecycle, thumbnail cache/debounce ve kritik kaynak regresyonlarını kontrol eder.
+Testler; fixture tabanlı script/metadata koruması, gerçek-dünya ScratchJr alanlarıyla oluşturulan .sjr ZIP round-trip'i, import path traversal/duplicate basename kontrolleri, bozuk ScratchJr metadata doğrulaması, sprite-başına ses ilişkileri, aktif sayfa, layer sırası, SVG fallback politikası, CSP/offline runtime, service worker, audio lifecycle, thumbnail cache/debounce, import/export progress, dialog focus yönetimi, keyboard tab navigation ve responsive touch kurallarını kontrol eder.
 
 ## ScratchJr uyumluluğu
 
