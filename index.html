@@ -20,10 +20,10 @@
     <h1>SJR Atölyesi</h1>
   </div>
   <nav class="tabbar" id="tabbar" role="tablist" aria-label="Proje bölümleri">
-    <button class="tab active" role="tab" aria-selected="true" data-tab="chars"><span class="ic" style="background:var(--purple)"></span>Karakterler <span class="badge" id="badgeChars">0</span></button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="bg"><span class="ic" style="background:var(--blue)"></span>Arkaplanlar <span class="badge" id="badgeBg">0</span></button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="sounds"><span class="ic" style="background:var(--green)"></span>Sesler <span class="badge" id="badgeSnd">0</span></button>
-    <button class="tab" role="tab" aria-selected="false" data-tab="stage"><span class="ic" style="background:var(--yellow)"></span>Sahne</button>
+    <button class="tab active" id="tab-chars" role="tab" aria-selected="true" aria-controls="panel-chars" tabindex="0" data-tab="chars"><span class="ic" style="background:var(--purple)"></span>Karakterler <span class="badge" id="badgeChars">0</span></button>
+    <button class="tab" id="tab-bg" role="tab" aria-selected="false" aria-controls="panel-bg" tabindex="-1" data-tab="bg"><span class="ic" style="background:var(--blue)"></span>Arkaplanlar <span class="badge" id="badgeBg">0</span></button>
+    <button class="tab" id="tab-sounds" role="tab" aria-selected="false" aria-controls="panel-sounds" tabindex="-1" data-tab="sounds"><span class="ic" style="background:var(--green)"></span>Sesler <span class="badge" id="badgeSnd">0</span></button>
+    <button class="tab" id="tab-stage" role="tab" aria-selected="false" aria-controls="panel-stage" tabindex="-1" data-tab="stage"><span class="ic" style="background:var(--yellow)"></span>Sahne</button>
   </nav>
   <div class="grow"></div>
   <div class="namewrap">
@@ -42,7 +42,7 @@
 
 <main>
   <!-- KARAKTERLER -->
-  <section class="panel active" data-tab="chars">
+  <section class="panel active" id="panel-chars" role="tabpanel" aria-labelledby="tab-chars" data-tab="chars">
     <div class="card">
       <h2>Karakterler</h2>
       <p class="sub">Resim veya SVG yükle. Sahneye eklemek için kütüphanedeki bir karaktere tıkla.</p>
@@ -64,7 +64,7 @@
   </section>
 
   <!-- ARKAPLANLAR -->
-  <section class="panel" data-tab="bg">
+  <section class="panel" id="panel-bg" role="tabpanel" aria-labelledby="tab-bg" data-tab="bg">
     <div class="card">
       <h2>Arkaplanlar</h2>
       <p class="sub">Resim/SVG yükle ya da düz renk seç. Seçilen arkaplan o anki sayfaya uygulanır.</p>
@@ -90,7 +90,7 @@
   </section>
 
   <!-- SESLER -->
-  <section class="panel" data-tab="sounds">
+  <section class="panel" id="panel-sounds" role="tabpanel" aria-labelledby="tab-sounds" data-tab="sounds">
     <div class="card">
       <h2>Sesler</h2>
       <p class="sub">Eklenen sesler tüm karakterlere bağlanır ve ScratchJr'daki ses bloğunda görünür.</p>
@@ -145,7 +145,7 @@
   </div>
 
   <!-- SAHNE -->
-  <section class="panel" data-tab="stage">
+  <section class="panel" id="panel-stage" role="tabpanel" aria-labelledby="tab-stage" data-tab="stage">
     <div class="card">
       <div class="stage-layout">
         <div class="sidebar-col">
@@ -286,6 +286,15 @@
       <div class="pick-empty" id="charPickEmpty">Karakter kütüphanesi boş — Karakterler sekmesinden ekle.</div>
     </div>
   </div>
+</div>
+
+<div class="operation-progress" id="operationProgress" role="status" aria-live="polite" aria-atomic="true" hidden>
+  <div class="operation-progress-top">
+    <strong id="operationProgressTitle">İşlem hazırlanıyor</strong>
+    <span id="operationProgressPct">0%</span>
+  </div>
+  <div class="operation-progress-track" aria-hidden="true"><span id="operationProgressBar"></span></div>
+  <div class="operation-progress-label" id="operationProgressLabel">Hazırlanıyor…</div>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true"></div>
