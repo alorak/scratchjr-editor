@@ -1750,8 +1750,9 @@ function drawCover(ctx,img,W,H){ const iw=img.naturalWidth||img.width||W,ih=img.
 async function exportSRJ(pagesArg){
   if(typeof JSZip==='undefined') return showToast('Yerel sıkıştırma kütüphanesi yüklenemedi','err');
   const pages=Array.isArray(pagesArg)?pagesArg:state.pages;
-  // Hiç sahneye eklenmemiş karakter uyarısı
   const btn=document.getElementById('exportBtn'); btn.disabled=true; const old=btn.textContent; btn.textContent='Hazırlanıyor…';
+  const op=startOperation('Dışa aktarılıyor');
+  op.update(5,'Proje yapısı hazırlanıyor…');
   try{
     const name=(document.getElementById('pname').value||'Benim Projem').trim();
     const zip=new JSZip(); const root=zip.folder('project');
@@ -1768,6 +1769,7 @@ async function exportSRJ(pagesArg){
         }
       }
     }
+    op.update(20,state.sounds.length?'Sesler arşive eklendi':'Ses bulunmuyor');
     const mapSoundRef=ref=>{
       const raw=String(ref||''), base=raw.replace(/^.*[\\/]/,'');
       return soundOutBySource.get(raw)||soundOutBySource.get(base)||raw;
@@ -1827,6 +1829,7 @@ async function exportSRJ(pagesArg){
       pageObj.layers=mergeLayerOrder(oldLayers,emittedIds);
       jsonObj[key]=pageObj;
       const tb=await renderThumb(page); const tn=i+'_'+md5buf(tb)+'.png'; thumbDir.file(tn,tb); if(i===0)firstThumb=tn;
+      op.update(25+Math.round(50*(i+1)/Math.max(1,pages.length)),'Sayfa '+(i+1)+' / '+pages.length+' hazırlandı');
     }
     // Karakter kütüphanesindeki kullanılmayan öğeleri de editör round-trip'i için koru.
     const charManifest=[];
@@ -1847,6 +1850,7 @@ async function exportSRJ(pagesArg){
     // srjlib.json — import sırasında tüm bgLib'i geri yüklemek için
     const sndManifest=state.sounds.map((s,i)=>({file:soundFiles[i], name:s.name}));
     root.file('srjlib.json', JSON.stringify({characters:charManifest, backgrounds:bgManifest, sounds:sndManifest}));
+    op.update(82,'Kütüphane manifesti hazırlanıyor…');
 
     const data=state.sjrDataMeta ? cloneJson(state.sjrDataMeta) : {};
     if(!data.id) data.id=String(Math.floor(Date.now()/1000));
@@ -1857,15 +1861,18 @@ async function exportSRJ(pagesArg){
     data.name=name; data.mtime=String(Date.now());
     data.thumbnail={pagecount:pages.length,md5:firstThumb}; data.json=jsonObj;
     root.file('data.json', JSON.stringify(data));
+    op.update(90,'Arşiv sıkıştırılıyor…');
     const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE'});
+    op.update(98,'İndirme hazırlanıyor…');
     const safe=name.replace(/[^\p{L}\p{N} _-]/gu,'').trim()||'proje';
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=safe+'.sjr';
     document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    op.update(100,'Tamamlandı');
     showToast('✓ '+safe+'.sjr indirildi');
   }catch(err){ console.error(err); showToast('Dışa aktarma sırasında hata oluştu','err'); }
-  finally{ btn.disabled=false; btn.textContent=old; }
+  finally{ op.close(); btn.disabled=false; btn.textContent=old; }
 }
-document.getElementById('exportBtn').onclick=exportSRJ;
+document.getElementById('exportBtn').onclick=()=>exportSRJ();
 
 /* ---------- içe aktarma (.sjr) ---------- */
 function svgImageHref(svgText){
