@@ -3,21 +3,22 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
 const app=await readFile(new URL('../app.js',import.meta.url),'utf8');
+const transfer=await readFile(new URL('../sjr-import-export.mjs',import.meta.url),'utf8');
 
 test('critical round-trip guards remain wired',()=>{
   assert.match(app,/MAX_PAGES=4/);
-  assert.match(app,/selectBackgroundSvg\(asset,coverSvg\)/);
+  assert.match(transfer,/selectBackgroundSvg\(asset,coverSvg\)/);
   assert.match(app,/function fileToBackgroundAsset\(file\)/);
   assert.match(app,/const a=await fileToBackgroundAsset\(f\)/);
   assert.match(app,/preserveSvg:true/);
-  assert.match(app,/characters:charManifest/);
-  assert.match(app,/resolveCurrentPageIndex\(J\.currentPage,pageKeys\)/);
-  assert.match(app,/dataMetaWithoutJson\(data\)/);
-  assert.match(app,/jsonMetaWithoutPages\(J,pageKeys\)/);
-  assert.match(app,/pageMetaWithoutSprites\(po\)/);
+  assert.match(transfer,/characters:charManifest/);
+  assert.match(transfer,/resolveCurrentPageIndex\(J\.currentPage,pageKeys\)/);
+  assert.match(transfer,/dataMetaWithoutJson\(data\)/);
+  assert.match(transfer,/jsonMetaWithoutPages\(J,pageKeys\)/);
+  assert.match(transfer,/pageMetaWithoutSprites\(sourcePage\)/);
   assert.match(app,/escapeHtml\(c\.name\|\|'Karakter'\)/);
-  assert.match(app,/assertFileSize\(file,MAX_SJR_BYTES/);
-  assert.match(app,/assertZipSafety\(zip,\{maxEntries:MAX_ZIP_ENTRIES,maxEntryBytes:MAX_ZIP_ENTRY,maxTotalBytes:MAX_ZIP_UNCOMPRESSED\}\)/);
+  assert.match(transfer,/assertFileSize\(file,MAX_SJR_BYTES/);
+  assert.match(transfer,/assertZipSafety\(zip,ZIP_LIMITS\)/);
   assert.match(app,/restoreAutosave/);
   assert.doesNotMatch(app,/setAttribute\('stroke','#1a1a1a'\)/);
   assert.doesNotMatch(app,/state\.current=0; state\.selected=null/);
@@ -132,13 +133,13 @@ test('import resolver avoids ambiguous basename fallback and unsafe paths',async
 });
 
 test('import validates project metadata before replacing state',async()=>{
-  const validateAt=app.indexOf('validateScratchJrProject(data,MAX_PAGES)');
-  const assignAt=app.indexOf('Object.assign(state,ns)');
+  const validateAt=transfer.indexOf('validateScratchJrProject(data,MAX_PAGES)');
+  const assignAt=transfer.indexOf('Object.assign(state,ns)');
   assert.ok(validateAt>=0&&assignAt>validateAt);
-  assert.match(app,/readJsonEntry\(dataFile,'data\.json'\)/);
+  assert.match(transfer,/readJsonEntry\(dataEntry\.file,'data\.json'\)/);
   const archive=await readFile(new URL('../sjr-archive-utils.mjs',import.meta.url),'utf8');
   assert.match(archive,/readJsonEntry\(entry,label,maxBytes=2\*1024\*1024\)/);
-  assert.match(app,/checkpoint\(\);\s*Object\.assign\(state,ns\)/);
+  assert.match(transfer,/checkpoint\(\);\s*Object\.assign\(state,ns\)/);
 });
 
 test('import produces a user-visible validation report',async()=>{
@@ -147,14 +148,15 @@ test('import produces a user-visible validation report',async()=>{
   assert.match(index,/id="importReportSummary"/);
   assert.match(index,/id="importReportIssues"/);
   assert.match(app,/function showImportReport\(report\)/);
-  assert.match(app,/const report=await importSRJ\(file,op\.update\)/);
-  assert.match(app,/showImportReport\(report\)/);
+  assert.match(transfer,/const report=await importProject\(file,op\.update\)/);
+  assert.match(transfer,/showImportReport\(report\)/);
+  assert.match(app,/await sjrTransfer\.runImport\(file\)/);
 });
 
 test('manifest and sound maps avoid prototype-key object maps',()=>{
-  assert.match(app,/const sndNameByFile=new Map\(\)/);
-  assert.match(app,/Object\.prototype\.hasOwnProperty\.call\(po,spId\)/);
-  assert.match(app,/soundGroups=new Map\(\)/);
+  assert.match(transfer,/const soundNames=new Map\(\)/);
+  assert.match(transfer,/Object\.prototype\.hasOwnProperty\.call\(sourcePage,spId\)/);
+  assert.match(transfer,/soundGroups=new Map\(\)/);
 });
 
 test('confirmation modal sanitizes its limited HTML surface',()=>{
@@ -249,12 +251,12 @@ test('import and export expose staged operation progress',async()=>{
   assert.match(index,/id="operationProgressLabel"/);
   const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
   assert.match(ui,/export function startOperation\(title,doc=document\)/);
-  assert.match(app,/startOperation\('Dışa aktarılıyor'\)/);
-  assert.match(app,/startOperation\('İçe aktarılıyor'\)/);
-  assert.match(app,/async function importSRJ\(file,progress=\(\)=>\{\}\)/);
-  assert.match(app,/Arşiv açılıyor…/);
-  assert.match(app,/Sayfa '\+\(i\+1\)\+' \/ '\+pages\.length\+' hazırlandı/);
-  assert.match(app,/zip\.generateAsync\(\{type:'blob',compression:'DEFLATE'\},meta=>/);
+  assert.match(transfer,/startOperation\('Dışa aktarılıyor'\)/);
+  assert.match(transfer,/startOperation\('İçe aktarılıyor'\)/);
+  assert.match(transfer,/async function importProject\(file,progress=\(\)=>\{\}\)/);
+  assert.match(transfer,/Arşiv açılıyor…/);
+  assert.match(transfer,/Sayfa '\+\(i\+1\)\+' \/ '\+pages\.length\+' hazırlandı/);
+  assert.match(transfer,/zip\.generateAsync\(\{type:'blob',compression:'DEFLATE'\},meta=>/);
 });
 
 test('tabs use roving keyboard navigation and tabpanel semantics',async()=>{
@@ -303,15 +305,15 @@ test('mobile tablet layout exposes horizontal pages and coarse touch targets',as
 test('transfer operations are mutually exclusive and progress announcements stay quiet',async()=>{
   const index=await readFile(new URL('../index.html',import.meta.url),'utf8');
   const ui=await readFile(new URL('../ui-utils.mjs',import.meta.url),'utf8');
-  assert.match(app,/let transferBusy=false/);
-  assert.match(app,/function setTransferBusy\(busy\)/);
-  assert.match(app,/if\(transferBusy\) return showToast\('Başka bir içe\/dışa aktarma işlemi sürüyor'\)/);
-  assert.match(app,/setTransferBusy\(true\)/);
-  assert.match(app,/setTransferBusy\(false\)/);
+  assert.match(transfer,/let transferBusy=false/);
+  assert.match(transfer,/function setTransferBusy\(busy\)/);
+  assert.match(transfer,/if\(transferBusy\)\{showToast\('Başka bir içe\/dışa aktarma işlemi sürüyor'\)/);
+  assert.match(transfer,/setTransferBusy\(true\)/);
+  assert.match(transfer,/setTransferBusy\(false\)/);
   assert.doesNotMatch(index,/id="operationProgress" role="status"/);
   assert.match(index,/id="operationProgressLabel" role="status" aria-live="polite"/);
   assert.match(ui,/if\(label\.textContent!==nextText\) label\.textContent=nextText/);
-  assert.match(app,/op\.update\(pct,'Arşiv sıkıştırılıyor…'\)/);
+  assert.match(transfer,/op\.update\(pct,'Arşiv sıkıştırılıyor…'\)/);
 });
 
 
@@ -346,4 +348,17 @@ test('audio recorder and SJR archive helpers are extracted and cached offline',a
   assert.match(audio,/export function audioBufferToWav/);
   assert.match(archive,/export function assertZipSafety/);
   for(const asset of ['audio-utils.mjs','audio-recorder.mjs','sjr-archive-utils.mjs']) assert.ok(sw.includes(asset),asset+' missing from service worker cache');
+});
+
+
+test('SJR transfer controller owns orchestration while app keeps thin UI wiring',()=>{
+  assert.match(app,/from '\.\/sjr-import-export\.mjs'/);
+  assert.match(app,/createSjrTransferController\(\{/);
+  assert.match(app,/sjrTransfer\.exportProject\(\)/);
+  assert.match(app,/sjrTransfer\.runImport\(file\)/);
+  assert.doesNotMatch(app,/async function exportProject/);
+  assert.doesNotMatch(app,/async function importProject/);
+  assert.match(transfer,/export function createSjrTransferController/);
+  assert.match(transfer,/async function exportProject\(pagesArg\)/);
+  assert.match(transfer,/async function importProject\(file,progress=\(\)=>\{\}\)/);
 });
