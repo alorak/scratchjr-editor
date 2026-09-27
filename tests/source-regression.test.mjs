@@ -106,7 +106,7 @@ test('backgrounds share the same complex-SVG fallback policy',()=>{
 test('ImageTracer output re-enters SVG policy and normalization',()=>{
   assert.match(app,/const tracedPolicy=inspectSvgCompatibility\(traced\)/);
   assert.match(pipeline,/normalizeSvgForChar\(traced/);
-  assert.match(app,/normalizeSvgForBackground\(traced\)/);
+  assert.match(pipeline,/normalizeSvgForBackground\(traced\)/);
 });
 
 test('recorder invalidates pending microphone permission requests',async()=>{
